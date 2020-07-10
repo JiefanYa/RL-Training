@@ -140,13 +140,52 @@ class RL_Trainer(object):
     ####################################
 
     def collect_training_trajectories(self, itr, load_initial_expertdata, collect_policy, batch_size):
-        # TODO: GETTHIS from HW1
+
+        # TODO: GETTHIS from HW1: Done
+        """
+            :param itr:
+            :param load_initial_expertdata:  path to expert data pkl file
+            :param collect_policy:  the current policy using which we collect data
+            :param batch_size:  the number of transitions we collect
+            :return:
+                paths: a list trajectories
+                envsteps_this_batch: the sum over the numbers of environment steps in paths
+                train_video_paths: paths which also contain videos for visualization purposes
+        """
+
+        if itr == 0:
+            print("loading data from ", load_initial_expertdata)
+            with open(load_initial_expertdata, 'rb') as file:
+                loaded_paths = pickle.load(file)
+            return loaded_paths, 0, None
+
+        print("\nCollecting data to be used for training...")
+        paths, envsteps_this_batch = sample_trajectories(self.env, collect_policy, batch_size, self.params['ep_len'])
+
+        train_video_paths = None
+        if self.log_video:
+            print('\nCollecting train rollouts to be used for saving videos...')
+            train_video_paths = sample_n_trajectories(self.env, collect_policy, MAX_NVIDEO, MAX_VIDEO_LEN, True)
+
+        return paths, envsteps_this_batch, train_video_paths
 
     def train_agent(self):
-        # TODO: GETTHIS from HW1
+
+        # TODO: GETTHIS from HW1: Done
+        print('\nTraining agent using sampled data from replay buffer...')
+        for train_step in range(self.params['num_agent_train_steps_per_iter']):
+            ob_batch, ac_batch, re_batch, next_ob_batch, terminal_batch = \
+                self.agent.sample(self.params['train_batch_size'])
+            self.agent.train(ob_batch, ac_batch, re_batch, next_ob_batch, terminal_batch)
 
     def do_relabel_with_expert(self, expert_policy, paths):
-        # TODO: GETTHIS from HW1 (although you don't actually need it for this homework)
+
+        # TODO: GETTHIS from HW1: Done
+        print("\nRelabelling collected observations with labels from an expert policy...")
+
+        for i in range(len(paths)):
+            paths[i]["action"] = expert_policy.get_action(paths[i]["observation"])
+        return paths
 
     ####################################
     ####################################

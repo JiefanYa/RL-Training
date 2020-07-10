@@ -87,7 +87,7 @@ class MLPPolicy(BasePolicy):
         # HINT1: you will need to call self.sess.run
         # HINT2: the tensor we're interested in evaluating is self.sample_ac
         # HINT3: in order to run self.sample_ac, it will need observation fed into the feed_dict
-        return self.sess.run([self.sample_ac], feed_dict={self.observations_pl: observation})[0]
+        return self.sess.run([self.sample_ac], feed_dict={self.observations_pl: observation})[0] # QUESTION: run what?
 
 
     # update/train this policy
@@ -107,7 +107,7 @@ class MLPPolicySL(MLPPolicy):
 
     def define_placeholders(self):
         # placeholder for observations
-        self.observations_pl = tf.placeholder(shape=[None, self.ob_dim], name="ob", dtype=tf.float32)
+        self.observations_pl = tf.placeholder(shape=[None, self.ob_dim], name="ob", dtype=tf.float32) # QUESTION: shape?
 
         # placeholder for actions
         self.actions_pl = tf.placeholder(shape=[None, self.ac_dim], name="ac", dtype=tf.float32)
@@ -127,5 +127,5 @@ class MLPPolicySL(MLPPolicy):
 
     def update(self, observations, actions):
         assert(self.training, 'Policy must be created with training=True in order to perform training updates...')
-        self.sess.run(self.train_op, feed_dict={self.observations_pl: observations, self.acs_labels_na: actions})
+        self.sess.run(self.train_op, feed_dict={self.observations_pl: observations, self.acs_labels_na: actions}) # QUESTION: run what?
 

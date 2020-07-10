@@ -41,7 +41,7 @@ class RL_Trainer(object):
         self.env.seed(seed)
 
         # Maximum length for episodes
-        self.params['ep_len'] = self.params['ep_len'] or self.env.spec.max_episode_steps
+        self.params['ep_len'] = self.params['ep_len'] or self.env.spec.max_episode_steps # 1000
 
         # Is this env continuous, or self.discrete?
         discrete = isinstance(self.env.action_space, gym.spaces.Discrete)
