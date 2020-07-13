@@ -81,6 +81,7 @@ class MLPPolicy(BasePolicy):
             #log probability under a categorical distribution
             logits_na = self.parameters
             self.logprob_n = tf.distributions.Categorical(logits=logits_na).log_prob(self.actions_pl)
+            # QUESTION: is this performing the gradient?
         else:
             #log probability under a multivariate gaussian
             mean, logstd = self.parameters
@@ -177,7 +178,7 @@ class MLPPolicyPG(MLPPolicy):
         # define the log probability of seen actions/observations under the current policy
         self.define_log_prob()
 
-        # TODO: define the loss that should be optimized when training a policy with policy gradient
+        # TODO: define the loss that should be optimized when training a policy with policy gradient: Done
         # HINT1: Recall that the expression that we want to MAXIMIZE
             # is the expectation over collected trajectories of:
             # sum_{t=0}^{T-1} [grad [log pi(a_t|s_t) * (Q_t - b_t)]]
@@ -187,30 +188,34 @@ class MLPPolicyPG(MLPPolicy):
             # to get [Q_t - b_t]
         # HINT4: don't forget that we need to MINIMIZE this self.loss
             # but the equation above is something that should be maximized
-        self.loss = tf.reduce_sum(TODO)
+        self.loss = tf.reduce_sum(-self.logprob_n * self.adv_n)
 
-        # TODO: define what exactly the optimizer should minimize when updating the policy
-        self.train_op = tf.train.AdamOptimizer(self.learning_rate).minimize(TODO)
+        # TODO: define what exactly the optimizer should minimize when updating the policy: Done
+        self.train_op = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
 
         if self.nn_baseline:
-            # TODO: define the loss that should be optimized for training the baseline
+            # TODO: define the loss that should be optimized for training the baseline: Done
             # HINT1: use tf.losses.mean_squared_error, similar to SL loss from hw1
             # HINT2: we want predictions (self.baseline_prediction) to be as close as possible to the labels (self.targets_n)
                 # see 'update' function below if you don't understand what's inside self.targets_n
-            self.baseline_loss = TODO
+            self.baseline_loss = tf.losses.mean_squared_error(self.targets_n, self.baseline_prediction)
 
-            # TODO: define what exactly the optimizer should minimize when updating the baseline
-            self.baseline_update_op = tf.train.AdamOptimizer(self.learning_rate).minimize(TODO)
+            # TODO: define what exactly the optimizer should minimize when updating the baseline: Done
+            self.baseline_update_op = tf.train.AdamOptimizer(self.learning_rate).minimize(self.baseline_loss)
 
     #########################
 
     def run_baseline_prediction(self, obs):
         
-        # TODO: query the neural net that's our 'baseline' function, as defined by an mlp above
+        # TODO: query the neural net that's our 'baseline' function, as defined by an mlp above: Done
         # HINT1: query it with observation(s) to get the baseline value(s)
         # HINT2: see build_baseline_forward_pass (above) to see the tensor that we're interested in
         # HINT3: this will be very similar to how you implemented get_action (above)
-        return TODO
+        if len(obs.shape)>1:
+            observation = obs
+        else:
+            observation = obs[None]
+        return self.sess.run([self.baseline_prediction], feed_dict={self.observations_pl: observation})[0]
 
     def update(self, observations, acs_na, adv_n=None, acs_labels_na=None, qvals=None):
         assert(self.training, 'Policy must be created with training=True in order to perform training updates...')
@@ -219,9 +224,9 @@ class MLPPolicyPG(MLPPolicy):
 
         if self.nn_baseline:
             targets_n = (qvals - np.mean(qvals))/(np.std(qvals)+1e-8)
-            # TODO: update the nn baseline with the targets_n
+            # TODO: update the nn baseline with the targets_n: Done
             # HINT1: run an op that you built in define_train_op
-            TODO
+            self.sess.run([self.baseline_update_op], feed_dict={self.observations_pl: observations, self.targets_n: targets_n})
         return loss
 
 #####################################################
