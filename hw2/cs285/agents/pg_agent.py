@@ -122,8 +122,8 @@ class PGAgent(BaseAgent):
         # HINT2: advantage should be [Q-b]
         if self.nn_baseline:
             b_n_unnormalized = self.actor.run_baseline_prediction(obs)
-            b_n = b_n_unnormalized * np.std(q_values) + np.mean(q_values)
-            adv_n = q_values - b_n
+            b_n = b_n_unnormalized * np.std(q_values) + np.mean(q_values) # QUESTION: approximate num of standard
+            adv_n = q_values - b_n                                        # deviations from the mean of q_values?
 
         # Else, just set the advantage to [Q]
         else:

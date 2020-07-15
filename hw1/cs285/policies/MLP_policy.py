@@ -58,7 +58,7 @@ class MLPPolicy(BasePolicy):
         logstd = tf.Variable(tf.zeros(self.ac_dim), name='logstd')
         self.parameters = (mean, logstd)
 
-    def build_action_sampling(self):
+    def build_action_sampling(self): # QUESTION: what does this function do
         mean, logstd = self.parameters
         self.sample_ac = mean + tf.exp(logstd) * tf.random_normal(tf.shape(mean), 0, 1)
 

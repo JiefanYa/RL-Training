@@ -65,7 +65,7 @@ class MLPPolicy(BasePolicy):
             logstd = tf.Variable(tf.zeros(self.ac_dim), name='logstd')
             self.parameters = (mean, logstd)
 
-    def build_action_sampling(self):
+    def build_action_sampling(self): # QUESTION: what does this do
         if self.discrete:
             logits_na = self.parameters
             self.sample_ac = tf.squeeze(tf.multinomial(logits_na, num_samples=1), axis=1)
@@ -222,7 +222,7 @@ class MLPPolicyPG(MLPPolicy):
 
         _, loss = self.sess.run([self.train_op, self.loss], feed_dict={self.observations_pl: observations, self.actions_pl: acs_na, self.adv_n: adv_n})
 
-        if self.nn_baseline:
+        if self.nn_baseline: # QUESTION: how does training the policy and the baseline at the same time gonna work?
             targets_n = (qvals - np.mean(qvals))/(np.std(qvals)+1e-8)
             # TODO: update the nn baseline with the targets_n: Done
             # HINT1: run an op that you built in define_train_op

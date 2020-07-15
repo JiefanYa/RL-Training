@@ -25,7 +25,7 @@ def build_mlp(input_placeholder, output_size, scope, n_layers, size, activation=
         output_placeholder: the result of a forward pass through the hidden layers + the output layer
     """
     output_placeholder = input_placeholder
-    with tf.variable_scope(scope):
+    with tf.variable_scope(scope): # QUESTION: what does scope do? e.g: nn_baseline in build_baseline_forward_pass()
         for _ in range(n_layers):
             output_placeholder = tf.layers.dense(output_placeholder, size, activation=activation)
         output_placeholder = tf.layers.dense(output_placeholder, output_size, activation=activation)
