@@ -49,13 +49,13 @@ class BootstrappedContinuousCritic(BaseCritic):
             size=self.size))
         self.sy_target_n = tf.placeholder(shape=[None], name="critic_target", dtype=tf.float32)
 
-        # TODO: set up the critic loss
+        # TODO: set up the critic loss: DONE
         # HINT1: the critic_prediction should regress onto the targets placeholder (sy_target_n)
         # HINT2: use tf.losses.mean_squared_error
-        self.critic_loss = TODO
+        self.critic_loss = tf.losses.mean_squared_error(self.sy_target_n, self.critic_prediction)
 
-        # TODO: use the AdamOptimizer to optimize the loss defined above
-        self.critic_update_op = TODO
+        # TODO: use the AdamOptimizer to optimize the loss defined above: DONE
+        self.critic_update_op = tf.train.AdamOptimizer().minimize(self.critic_loss)
 
     def define_placeholders(self):
         """
@@ -77,9 +77,9 @@ class BootstrappedContinuousCritic(BaseCritic):
         return sy_ob_no, sy_ac_na, sy_adv_n
 
     def forward(self, ob):
-        # TODO: run your critic
+        # TODO: run your critic: DONE
         # HINT: there's a neural network structure defined above with mlp layers, which serves as your 'critic'
-        return TODO
+        return self.sess.run([self.critic_prediction], feed_dict={self.sy_ob_no: ob})[0]
 
     def update(self, ob_no, next_ob_no, re_n, terminal_n):
         """
@@ -100,7 +100,7 @@ class BootstrappedContinuousCritic(BaseCritic):
                 loss
         """
 
-        # TODO: Implement the pseudocode below: 
+        # TODO: Implement the pseudocode below: DONE
 
         # do the following (self.num_grad_steps_per_target_update * self.num_target_updates) times:
             # every self.num_grad_steps_per_target_update steps (which includes the first step),
@@ -117,6 +117,10 @@ class BootstrappedContinuousCritic(BaseCritic):
                     #a) sy_ob_no with ob_no
                     #b) sy_target_n with target values calculated above
         
-        TODO
+        for i in range(self.num_grad_steps_per_target_update * self.num_target_updates):
+            if i % self.num_grad_steps_per_target_update == 0:
+                new_target = re_n + self.gamma * self.forward(next_ob_no) * (1 - terminal_n)
+            loss, _ = self.sess.run([self.critic_loss, self.critic_update_op],
+                                    feed_dict={self.sy_ob_no: ob_no, self.sy_target_n: new_target})
 
         return loss

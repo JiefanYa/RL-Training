@@ -6,7 +6,13 @@ import os
 
 def build_mlp(input_placeholder, output_size, scope, n_layers, size, activation=tf.tanh, output_activation=None):
     
-    # TODO: GETTHIS from HW1
+    # TODO: GETTHIS from HW1: DONE
+    output_placeholder = input_placeholder
+    with tf.variable_scope(scope):  # QUESTION: what does scope do? e.g: nn_baseline in build_baseline_forward_pass()
+        for _ in range(n_layers):
+            output_placeholder = tf.layers.dense(output_placeholder, size, activation=activation)
+        output_placeholder = tf.layers.dense(output_placeholder, output_size, activation=activation)
+    return output_placeholder
 
 
 ############################################

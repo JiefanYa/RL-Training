@@ -60,7 +60,7 @@ class MLPPolicy(BasePolicy):
 
     def build_action_sampling(self): # QUESTION: what does this function do
         mean, logstd = self.parameters
-        self.sample_ac = mean + tf.exp(logstd) * tf.random_normal(tf.shape(mean), 0, 1)
+        self.sample_ac = mean + tf.exp(logstd) * tf.random_normal(tf.shape(mean), 0, 1) # Reparametrize trick: important
 
     def define_train_op(self):
         raise NotImplementedError
@@ -107,7 +107,7 @@ class MLPPolicySL(MLPPolicy):
 
     def define_placeholders(self):
         # placeholder for observations
-        self.observations_pl = tf.placeholder(shape=[None, self.ob_dim], name="ob", dtype=tf.float32) # QUESTION: shape?
+        self.observations_pl = tf.placeholder(shape=[None, self.ob_dim], name="ob", dtype=tf.float32) # QUESTION: dont care
 
         # placeholder for actions
         self.actions_pl = tf.placeholder(shape=[None, self.ac_dim], name="ac", dtype=tf.float32)

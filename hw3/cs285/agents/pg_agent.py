@@ -34,7 +34,7 @@ class PGAgent(BaseAgent):
                                  ) 
 
         # replay buffer
-        self.replay_buffer = ReplayBuffer(1000000)
+        self.replay_buffer = ReplayBuffer(500000)
 
     def train(self, obs, acs, rews_list, next_obs, terminals):
 

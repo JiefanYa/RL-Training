@@ -29,7 +29,7 @@ class RL_Trainer(object):
         self.sess = create_tf_session(self.params['use_gpu'], which_gpu=self.params['which_gpu'])
 
         # Set random seeds
-        seed = self.params['seed']
+        seed = self.params['seed'] # seed important
         tf.set_random_seed(seed)
         np.random.seed(seed)
 

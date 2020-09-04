@@ -81,7 +81,6 @@ class MLPPolicy(BasePolicy):
             #log probability under a categorical distribution
             logits_na = self.parameters
             self.logprob_n = tf.distributions.Categorical(logits=logits_na).log_prob(self.actions_pl)
-            # QUESTION: is this performing the gradient?
         else:
             #log probability under a multivariate gaussian
             mean, logstd = self.parameters
@@ -130,7 +129,7 @@ class MLPPolicy(BasePolicy):
 #     def define_placeholders(self):
 #         # placeholder for observations
 #         self.observations_pl = tf.placeholder(shape=[None, self.ob_dim], name="ob",
-#                                               dtype=tf.float32)  # QUESTION: shape?
+#                                               dtype=tf.float32)
 #
 #         # placeholder for actions
 #         self.actions_pl = tf.placeholder(shape=[None, self.ac_dim], name="ac", dtype=tf.float32)

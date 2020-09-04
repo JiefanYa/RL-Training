@@ -34,14 +34,16 @@ class ACAgent(BaseAgent):
 
     def estimate_advantage(self, ob_no, next_ob_no, re_n, terminal_n):
         
-        # TODO Implement the following pseudocode:
+        # TODO Implement the following pseudocode: : DONE
             # 1) query the critic with ob_no, to get V(s)
             # 2) query the critic with next_ob_no, to get V(s')
             # 3) estimate the Q value as Q(s, a) = r(s, a) + gamma*V(s')
             # HINT: Remember to cut off the V(s') term (ie set it to 0) at terminal states (ie terminal_n=1)
             # 4) calculate advantage (adv_n) as A(s, a) = Q(s, a) - V(s)
-        
-        adv_n = TODO
+
+        v_s = self.sess.run([self.critic.critic_prediction], feed_dict={self.critic.sy_ob_no: ob_no})[0]
+        v_s_prime = self.sess.run([self.critic.critic_prediction], feed_dict={self.critic.sy_ob_no: next_ob_no})[0]
+        adv_n = re_n + self.gamma * (v_s_prime) * (1 - terminal_n) - v_s
 
         if self.standardize_advantages:
             adv_n = (adv_n - np.mean(adv_n)) / (np.std(adv_n) + 1e-8)
@@ -49,7 +51,7 @@ class ACAgent(BaseAgent):
 
     def train(self, ob_no, ac_na, re_n, next_ob_no, terminal_n):
         
-        # TODO Implement the following pseudocode:
+        # TODO Implement the following pseudocode: DONE
             # for agent_params['num_critic_updates_per_agent_update'] steps,
             #     update the critic
 
@@ -58,11 +60,17 @@ class ACAgent(BaseAgent):
             # for agent_params['num_actor_updates_per_agent_update'] steps,
             #     update the actor
         
-        TODO
+        for i in range(self.agent_params['num_critic_updates_per_agent_update']):
+            critic_loss = self.critic.update(ob_no, next_ob_no, re_n, terminal_n)
+
+        advantage = self.estimate_advantage(ob_no, next_ob_no, re_n, terminal_n)
+
+        for i in range(self.agent_params['num_actor_updates_per_agent_update']):
+            actor_loss = self.actor.update(ob_no, ac_na, advantage)
 
         loss = OrderedDict()
-        loss['Critic_Loss'] = TODO  # put final critic loss here
-        loss['Actor_Loss'] = TODO  # put final actor loss here
+        loss['Critic_Loss'] = critic_loss  # put final critic loss here
+        loss['Actor_Loss'] = actor_loss  # put final actor loss here
         return loss
 
     def add_to_replay_buffer(self, paths):
