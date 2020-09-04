@@ -11,7 +11,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import os
 
-device = torch.device('cpu')
+device = torch.device('cuda:1') # TODO: fix cuda issue
 dtype = torch.float32
 
 
@@ -26,7 +26,7 @@ def loadData(spec, new=False, path='', batch_size=32, train_num=5000, val_num=10
         val_dataset = ImplDataset(spec, val_num, val) if new else torch.load(val)
         test_dataset = ImplDataset(spec, test_num, test) if new else torch.load(test)
     except Exception as err:
-        print(f'Error when loading dataset: {err}')
+        print('Error when loading dataset: ' + err)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
@@ -41,7 +41,7 @@ class Encoder(nn.Module):
         super().__init__()
 
         self.num_layers = 6 # self.num_layers = np.log2(encoder_params['resolution'])
-        num_channels = 4 # num_channels = encoder_params['init_num_channels']
+        num_channels = 3 # num_channels = encoder_params['init_num_channels']
         kernel_size = 33 # encoder_params['resolution'] / 2 + 1
         cnn_layers = []
 
@@ -51,14 +51,18 @@ class Encoder(nn.Module):
             num_channels *= 2
             kernel_size = (kernel_size - 1) / 2 + 1
 
-        cnn_layers.append(nn.Linear(1, 64)) # nn.Linear(1, encoder_params['resolution'])
-
         self.layers = nn.ModuleList(cnn_layers)
+        self.mapping = nn.Linear(192, 64)
+        # nn.Linear(num_channels*np.power(2,self.num_layers), encoder_params['obs_dim'])
+
+
 
     def forward(self, x):
         out = x
         for layer in self.layers:
             out = layer(out)
+        out = torch.squeeze(out)
+        out = self.mapping(out)
         return out
 
 
@@ -77,7 +81,7 @@ class MLP(nn.Module):
         self.num_layers = params['num_layers']
         fc_layers = []
         for i in range(self.num_layers):
-            input_dim = params['input_dim'] if i == 0 else params['l' +  + str(i) + '_dim']
+            input_dim = params['input_dim'] if i == 0 else params['l' + str(i) + '_dim']
             output_dim = params['output_dim'] if i == self.num_layers-1 else params['l' + str(i+1) + '_dim']
             fc_layers.append(nn.Linear(input_dim, output_dim))
 
@@ -119,16 +123,16 @@ class Predictor(nn.Module):
 
         self.mlp = MLP(self.mlp_params)
         self.lstm = nn.LSTM(self.input_size, self.hidden_size, batch_first=True)
+        # self.fc = (?)
 
     def forward(self, ztm2, ztm1, z):
         ztm2_embed = self.mlp(ztm2)
         ztm1_embed = self.mlp(ztm1)
         z_embed = self.mlp(z)
-        embed = torch.stack([ztm2_embed,ztm1_embed,z_embed], dim=1) # Question: (?)
+        embed = torch.cat((ztm2_embed,ztm1_embed,z_embed), dim=1)
         embed_stack = torch.stack([embed] * self.sequence_length, dim=1)
-        lstm_out, _  = self.lstm(embed_stack)
-        out = torch.reshape(lstm_out, (-1, self.sequence_length))
-        return out
+        lstm_out, _  = self.lstm(embed_stack) # (batch_size, seq_len, hidden_dim)
+        return lstm_out
 
 
 class Model(nn.Module):
@@ -155,17 +159,19 @@ class Model(nn.Module):
         self.reward_params['output_dim'] = 1
 
         self.reward_heads = []
-        for i in range(model_params['T']):
+        for i in range(27): # model_params['T']
             self.reward_heads.append(MLP(self.reward_params))
 
     def forward(self, tm2, tm1, t):
         ztm2 = self.encoder1(tm2)
         ztm1 = self.encoder2(tm1)
         zt = self.encoder3(t)
-        h1tT = self.predictor(ztm2, ztm1, zt)
+        h1tT = self.predictor(ztm2, ztm1, zt) # (batch_size, seq_len, hidden_dim)
         reward_estimates = []
-        for i in range(len(h1tT)):
-            reward_estimates.append(self.reward_heads[i](h1tT[i]))
+        for i in range(h1tT.shape[1]):
+            head = self.reward_heads[i]
+            input = h1tT[:,i,:]
+            reward_estimates.append(head(input))
         return reward_estimates
 
 
@@ -178,11 +184,19 @@ def trainModel(model, optimizer, loader, file, epochs=50, print_every=100):
     for e in range(epochs):
         for t, sample in enumerate(loader):
             model.train()
-            x = sample['images']
-            y = sample['rewards']
 
-            out = model(x)
-            loss = criterion(out, y)
+            tm2 = sample['images'][:,0,:,:,:]
+            tm1 = sample['images'][:,1,:,:,:]
+            t = sample['images'][:,2,:,:,:]
+            y = sample['rewards']['agent_x']
+
+            tm2 = tm2.to(device=device, dtype=dtype)
+            tm1 = tm1.to(device=device, dtype=dtype)
+            t = t.to(device=device, dtype=dtype)
+            y = y.to(device=device, dtype=dtype)
+
+            out = model(tm2, tm1, t)
+            loss = criterion(out, y) # TODO: list has no size
 
             optimizer.zero_grad()
             loss.backward()
@@ -201,6 +215,8 @@ def trainModel(model, optimizer, loader, file, epochs=50, print_every=100):
 def runModel(parms=None):
 
     """Train encoder from scratch"""
+    print('CUDA enabled - ' + str(torch.cuda.is_available()))
+
     spec = AttrDict(
         resolution=64,
         max_seq_len=30,
@@ -209,16 +225,17 @@ def runModel(parms=None):
         shapes_per_traj=4,
         rewards=[AgentXReward, AgentYReward, TargetXReward, TargetYReward],
     )
-    file = 'encoder.pt'
-    loadData(spec, new=True, path='./data')
-    # train_loader, val_loader, test_loader = loadData(spec, False, path='./data')
+
+    # train_loader, val_loader, test_loader = loadData(spec, new=True, path='./data')
     # for i,sample in enumerate(train_loader):
     #     x = sample['images']
     #     y = sample['rewards']
 
-    # model = Model()
-    # optimizer = optim.Adam(model.parameters(), lr=4e-3)
-    # trainModel(model, optimizer, train_loader, file)
+    file = './model/encoder.pt'
+    train_loader, val_loader, test_loader = loadData(spec, False, path='./data')
+    model = Model()
+    optimizer = optim.Adam(model.parameters(), lr=4e-3)
+    trainModel(model, optimizer, train_loader, file)
 
 
 if __name__ == "__main__":
