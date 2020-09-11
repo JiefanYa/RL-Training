@@ -45,7 +45,7 @@ class ImplDataset(MovingSpriteDataset):
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
-        return self.data[idx]
+        return idx, self.data[idx]
 
     def __len__(self):
         return len(self.data)
