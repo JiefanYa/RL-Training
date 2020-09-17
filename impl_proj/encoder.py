@@ -1,5 +1,5 @@
-from sprites_datagen.rewards import AgentXReward, AgentYReward, TargetXReward, TargetYReward
-from training_utils import loadEncoderData, trainEncoder, MLP
+from sprites_datagen.rewards import *
+from training_utils import loadVAEData, trainEncoder, trainDecoder, MLP
 from general_utils import AttrDict
 import numpy as np
 import torch
@@ -13,8 +13,8 @@ class Encoder(nn.Module):
     def __init__(self, encoder_params=None):
         super().__init__()
 
-        self.num_layers = 6 # self.num_layers = np.log2(encoder_params['resolution'])
-        num_channels = 4 # num_channels = encoder_params['first_num_channels']
+        self.num_layers = 6
+        num_channels = 4
         cnn_layers = []
 
         for i in range(self.num_layers):
@@ -27,7 +27,6 @@ class Encoder(nn.Module):
 
         self.layers = nn.ModuleList(cnn_layers)
         self.mapping = nn.Linear(128, 64)
-        # nn.Linear(num_channels*np.power(2,self.num_layers), encoder_params['obs_dim'])
 
     def forward(self, x):
         out = x
@@ -41,7 +40,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     """cnn decoder that decodes the reward-induced representations"""
 
-    def __init__(self, decode_params=None):
+    def __init__(self, decoder_params=None):
         super().__init__()
 
         self.decoder_input = nn.Linear(64, 128)
@@ -69,25 +68,26 @@ class Decoder(nn.Module):
 class Predictor(nn.Module):
     """LSTM predictor for reward preiction"""
 
-    def __init__(self, predictor_params=None):
+    def __init__(self, predictor_params):
         super().__init__()
 
-        self.input_size = 128 # predictor_params['lstm_size'] # assert == embed_stack.shape
+        self.input_size = 128 # predictor_params['lstm_size'] # assert == embed_stack.shape(0)
         self.hidden_size = 256 # predictor_params['hidden_size']
-        self.sequence_length = 27 # predictor_params['sequence_length']
+        self.input_sequence_length = predictor_params['input_sequence_length']
+        self.sequence_length = predictor_params['sequence_length']
 
-        self.mlp_params = {} # predictor_params['mlp_params']
+        self.mlp_params = {}
         self.mlp_params['num_layers'] = 3
-        self.mlp_params['input_dim'] = 192
+        self.mlp_params['input_dim'] = 64 * self.input_sequence_length
         self.mlp_params['l1_dim'] = 512
         self.mlp_params['l2_dim'] = 256
-        self.mlp_params['output_dim'] = 128
+        self.mlp_params['output_dim'] = self.input_size
 
         self.mlp = MLP(self.mlp_params)
         self.lstm = nn.LSTM(self.input_size, self.hidden_size, batch_first=True)
 
-    def forward(self, ztm2, ztm1, z):
-        z_cat = torch.cat((ztm2, ztm1, z),dim=1)
+    def forward(self, zs):
+        z_cat = torch.cat(zs, dim=1)
         z_embed = self.mlp(z_cat)
         embed_stack = torch.stack([z_embed] * self.sequence_length, dim=1)
         lstm_out, _  = self.lstm(embed_stack) # (batch_size, seq_len, hidden_dim)
@@ -97,43 +97,29 @@ class Predictor(nn.Module):
 class EncoderModel(nn.Module):
     """complete architecture"""
 
-    def __init__(self, model_params=None):
+    def __init__(self, model_params):
         super().__init__()
 
-        # self.encoder_params = {} # model_params['encoder_params]
-        # implement encoder_params
         self.encoder = Encoder()
-        # self.decoder = Decoder()
 
-        # self.predictor_params = {} # model_params['predictor_params]
-        # implement predictor_params
-        self.predictor = Predictor()
+        self.predictor_params = model_params['predictor_params']
+        self.predictor = Predictor(self.predictor_params)
 
-        self.reward_params = {} # model_params['reward_mlp_params']
-        self.reward_params['num_layers'] = 3
-        self.reward_params['input_dim'] = 256 # assert == self.predictor.hidden_size
-        self.reward_params['l1_dim'] = 256
-        self.reward_params['l2_dim'] = 64
-        self.reward_params['output_dim'] = 1
-
+        self.reward_params = model_params['reward_mlp_params']
+        self.K = model_params['reward_heads_num']
         reward_heads = []
-        for i in range(4): # self.K = model_params['K']
-            reward_head = MLP(self.reward_params) # AgentXReward, AgentYReward, TargetXReward, TargetYReward
+        for i in range(self.K):
+            reward_head = MLP(self.reward_params)
             reward_heads.append(reward_head)
         self.reward_heads = nn.ModuleList(reward_heads)
 
+    def forward(self, ts, decode_flag=False):
+        zts = [self.encoder(t) for t in ts]
 
-    def forward(self, tm2, tm1, t):
-        ztm2 = self.encoder(tm2)
-        ztm1 = self.encoder(tm1)
-        zt = self.encoder(t)
+        if decode_flag:
+            return zts
 
-        # ztm2_decode = self.decoder(ztm2.detach())
-        # ztm1_decode = self.decoder(ztm1.detach())
-        # zt_decode = self.decoder(zt.detach())
-        # decoder_output = [ztm2_decode, ztm1_decode, zt_decode]
-
-        h1tT = self.predictor(ztm2, ztm1, zt) # (batch_size, seq_len, hidden_dim)
+        h1tT = self.predictor(zts) # (batch_size, seq_len, hidden_dim)
         reward_estimates = []
         for head in self.reward_heads:
             rewards = []
@@ -144,42 +130,224 @@ class EncoderModel(nn.Module):
             reward_estimates.append(reward_estimate)
 
         return reward_estimates
-        # return reward_estimates, decoder_output
 
 
-def run(parms=None):
+class DecoderModel(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.decoder = Decoder()
+        self.encoder_model = None
+
+    def load_encoder(self, encoder_model):
+        self.encoder_model = encoder_model
+
+    def forward(self, ts):
+        zts = self.encoder_model(ts, decode_flag=True)
+        zts_decode = [self.decoder(zt.detach()) for zt in zts]
+        return zts_decode
+
+
+def run(params):
     """Train encoder from scratch"""
 
+    # Training model
+    spec = params['spec']
+    device = params['device']
+    dtype = params['dtype']
+    model_params = params['model_params']
+    file = params['model_path']
+    new_file = params['new_model_path'] if params['new_model_path'] else params['model_path']
+    data_path = params['data_path']
+    lr = params['learning_rate']
+    gamma = params['scheduler_gamma']
+    step_size = params['scheduler_step_size']
+    weight_decay = params['weight_decay']
+    epochs = params['epochs']
+    load_model = params['load_model']
+    load_new_data = params['load_new_data']
+    rewards = params['rewards']
+
+    train_decoder = params['train_decoder']
+    encoder_vert_file = params['encoder_vert_path']
+    encoder_hori_file = params['encoder_hori_path']
+    decoder_vert_file = params['decoder_vert_path']
+    decoder_hori_file = params['decoder_hori_path']
+    load_decoder_models = params['load_decoder_models']
+
+    train_loader, val_loader, test_loader = \
+        loadVAEData(spec, data_path, decoder=train_decoder, new=load_new_data)
+
+    if not train_decoder:
+        model = EncoderModel(model_params)
+    else:
+        encoder_vert = EncoderModel(model_params)
+        encoder_hori = EncoderModel(model_params)
+        decoder_vert = DecoderModel()
+        decoder_hori = DecoderModel()
+
+
+    if load_model and not train_decoder:
+        model.load_state_dict(torch.load(file))
+    if load_model and train_decoder:
+        encoder_vert.load_state_dict(torch.load(encoder_vert_file))
+        encoder_hori.load_state_dict(torch.load(encoder_hori_file))
+
+    if load_decoder_models:
+        decoder_vert.load_encoder(encoder_vert) # (?)
+        decoder_hori.load_encoder(encoder_hori)
+        decoder_vert.load_state_dict(torch.load(decoder_vert_file)) # (?)
+        decoder_hori.load_state_dict(torch.load(decoder_hori_file))
+
+    if not train_decoder:
+        # train encoder model
+        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size, gamma)
+        trainEncoder(model,
+                     rewards,
+                     optimizer,
+                     scheduler,
+                     train_loader,
+                     val_loader,
+                     new_file,
+                     device,
+                     dtype,
+                     epochs=epochs)
+    else:
+        # train decoder model, first train encoder
+        optimizer_encoder_vert = optim.Adam(encoder_vert.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer_encoder_hori = optim.Adam(encoder_hori.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler_encoder_vert = optim.lr_scheduler.ExponentialLR(optimizer_encoder_vert, gamma)
+        scheduler_encoder_hori = optim.lr_scheduler.ExponentialLR(optimizer_encoder_hori, gamma)
+
+        # vertical
+        trainEncoder(encoder_vert,
+                     ['vertical_position'],
+                     optimizer_encoder_vert,
+                     scheduler_encoder_vert,
+                     train_loader,
+                     val_loader,
+                     encoder_vert_file,
+                     device,
+                     dtype,
+                     epochs=epochs)
+        # horizontal
+        trainEncoder(encoder_hori,
+                     ['horizontal_position'],
+                     optimizer_encoder_hori,
+                     scheduler_encoder_hori,
+                     train_loader,
+                     val_loader,
+                     encoder_hori_file,
+                     device,
+                     dtype,
+                     epochs=epochs)
+
+        # then train decoder
+        decoder_vert.load_encoder(encoder_vert)
+        decoder_hori.load_encoder(encoder_hori)
+        optimizer_decoder_vert = optim.Adam(decoder_vert.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer_decoder_hori = optim.Adam(decoder_hori.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler_decoder_vert = optim.lr_scheduler.ExponentialLR(optimizer_decoder_vert, gamma)
+        scheduler_decoder_hori = optim.lr_scheduler.ExponentialLR(optimizer_decoder_hori, gamma)
+
+        # vertical
+        trainDecoder(decoder_vert,
+                     optimizer_decoder_vert,
+                     scheduler_decoder_vert,
+                     train_loader,
+                     val_loader,
+                     decoder_vert_file,
+                     device,
+                     dtype,
+                     vertical=True,
+                     epochs=epochs)
+        # horizontal
+        trainDecoder(decoder_hori,
+                     optimizer_decoder_hori,
+                     scheduler_decoder_hori,
+                     train_loader,
+                     val_loader,
+                     decoder_hori_file,
+                     device,
+                     dtype,
+                     vertical=False,
+                     epochs=epochs)
+
+
+if __name__ == "__main__":
+
+    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    dtype = torch.float32
+
+    # encoder training spec
     spec = AttrDict(
         resolution=64,
         max_seq_len=30,
         max_speed=0.05,
         obj_size=0.2,
-        shapes_per_traj=4,
-        rewards=[AgentXReward, AgentYReward, TargetXReward, TargetYReward],
+        shapes_per_traj=3,
+        rewards=[ZeroReward, VertPosReward, HorPosReward, AgentXReward, AgentYReward, TargetXReward, TargetYReward],
     )
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
-    # dtype = torch.float32
-
-    # Training model
-    file = './models/encoder.pt'
-    train_loader, val_loader, test_loader = loadEncoderData(spec, False, path='./data_large')
-    model = EncoderModel()
-    model.load_state_dict(torch.load(file))
-    optimizer = optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-3)
-    trainEncoder(model, optimizer, train_loader, val_loader, file, device, epochs=500)
-
-    # Trying to overfit a small dataset
-    # file = './models/encoder_overfit.pt'
-    # train_loader, val_loader, test_loader = loadEncoderData(spec, False, batch_size=4)
-    # model = EncoderModel()
-    # model.load_state_dict(torch.load(file))
-    # optimizer = optim.Adam(model.parameters(), lr=5e-5, weight_decay=1e-3)
-    # trainEncoder(model, optimizer, train_loader, val_loader, file, device, epochs=200, print_every=5)
-
-
-if __name__ == "__main__":
+    # # decoder training spec
+    # spec = AttrDict(
+    #     resolution=64,
+    #     max_seq_len=30,
+    #     max_speed=0.05,
+    #     obj_size=0.2,
+    #     shapes_per_traj=1,
+    #     rewards=[VertPosReward, HorPosReward],
+    # )
 
     params = {}
+
+    # implement predictor_parans
+    predictor_params = {}
+    predictor_params['input_sequence_length'] = 10
+    predictor_params['sequence_length'] = 20
+
+    # implement reward_mlp_params
+    reward_mlp_params = {}
+    reward_mlp_params['num_layers'] = 3
+    reward_mlp_params['input_dim'] = 256  # assert == predictor.hidden_size
+    reward_mlp_params['l1_dim'] = 256
+    reward_mlp_params['l2_dim'] = 64
+    reward_mlp_params['output_dim'] = 1
+
+    # model_parans
+    model_params = {}
+    model_params['predictor_params'] = predictor_params
+    model_params['reward_mlp_params'] = reward_mlp_params
+    model_params['reward_heads_num'] = 7 # decoder: 1
+    params['model_params'] = model_params
+
+    # training params
+    params['spec'] = spec
+    params['device'] = device
+    params['dtype'] = dtype
+    params['model_path'] = './models/encoder_09_17.pt'
+    params['data_path'] = './data/data_encoder'
+    params['new_model_path'] = None
+    params['load_model'] = False
+    params['load_new_data'] = False
+    params['rewards'] = \
+        ['zero', 'vertical_position', 'horizontal_position', 'agent_x', 'agent_y', 'target_x', 'target_y']
+    # decoder: ['vertical_position'] and ['horizontal_position']
+
+    # hyper params
+    params['learning_rate'] = 5e-4
+    params['scheduler_gamma'] = 0.75
+    params['scheduler_step_size'] = 20
+    params['weight_decay'] = 1e-3
+    params['epochs'] = 200
+
+    # decoder params
+    params['train_decoder'] = False
+    params['encoder_vert_path'] = './models/encoder_vert_09_17.pt'
+    params['encoder_hori_path'] = './models/encoder_hori_09_17.pt'
+    params['decoder_vert_path'] = './models/decoder_vert_09_17.pt'
+    params['decoder_hori_path'] = './models/decoder_hori_09_17.pt'
+    params['load_decoder_models'] = False
+
     run(params)

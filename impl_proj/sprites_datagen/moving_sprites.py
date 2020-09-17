@@ -26,10 +26,36 @@ class MovingSpriteDataset(Dataset):
         return data_dict
 
 
-class ImplDataset(MovingSpriteDataset):
+class EncoderDataset(MovingSpriteDataset):
 
     def __init__(self, spec, num, file):
         super().__init__(spec)
+        print('Generating dataset...\n')
+        self.data = []
+        for i in range(num):
+            new_data = super().__getitem__(None)
+            self.data.append(new_data)
+        self.saveToDisk(file)
+        print('Dataset ready.\n')
+
+    def saveToDisk(self, file):
+        print('Saving to disk...\n')
+        torch.save(self.data, file)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        return idx, self.data[idx]
+
+    def __len__(self):
+        return len(self.data)
+
+
+class DecoderDataset(MovingSpriteDataset):
+
+    def __init__(self, spec, num, file):
+        super().__init__(spec)
+        self._generator = SingleMovingSpritesGenerator(self._spec)
         print('Generating dataset...\n')
         self.data = []
         for i in range(num):
@@ -141,21 +167,42 @@ class DistractorTemplateMovingSpritesGenerator(TemplateMovingSpritesGenerator):
         return shape_idxs
 
 
+class SingleMovingSpritesGenerator(TemplateMovingSpritesGenerator):
+    """Differentiates between agent, target and distractor shapes."""
+    AGENT = 'tri_right'
+
+    def _sample_shapes(self):
+        """Retrieves shapes for agent, no targets or distractors."""
+        assert self._spec.shapes_per_traj == 1
+        shape_idxs = np.asarray([self.SHAPES.index(self.AGENT)])
+        return shape_idxs
+
+
 if __name__ == '__main__':
     import cv2
     from general_utils import make_image_seq_strip
-    from sprites_datagen.rewards import ZeroReward
+    from sprites_datagen.rewards import *
+    # spec = AttrDict(
+    #     resolution=64,
+    #     max_seq_len=30,
+    #     max_speed=0.05,      # total image range [0, 1]
+    #     obj_size=0.2,       # size of objects, full images is 1.0
+    #     shapes_per_traj=4,      # number of shapes per trajectory
+    #     rewards=[ZeroReward],
+    # )
     spec = AttrDict(
         resolution=64,
         max_seq_len=30,
-        max_speed=0.05,      # total image range [0, 1]
-        obj_size=0.2,       # size of objects, full images is 1.0
-        shapes_per_traj=4,      # number of shapes per trajectory
-        rewards=[ZeroReward],
+        max_speed=0.05,
+        obj_size=0.2,
+        shapes_per_traj=1,
+        rewards=[VertPosReward, HorPosReward],
     )
-    gen = DistractorTemplateMovingSpritesGenerator(spec)
+
+    # gen = DistractorTemplateMovingSpritesGenerator(spec)
+    gen = SingleMovingSpritesGenerator(spec)
     traj = gen.gen_trajectory()
     img = make_image_seq_strip([traj.images[None, :, None].repeat(3, axis=2).astype(np.float32)], sep_val=255.0).astype(np.uint8)
-    cv2.imwrite("test2.png", img[0].transpose(1, 2, 0))
+    cv2.imwrite("test.png", img[0].transpose(1, 2, 0))
 
 

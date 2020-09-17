@@ -1,7 +1,10 @@
 # import sprites_env
+from training_utils import MLP
 import gym
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.optim as optim
 import time
 
 from training_utils import *
@@ -21,7 +24,7 @@ class RL_Trainer(object):
         self.env.seed(seed)
 
         # agent
-        self.agent = Agent(self.env, self.params)
+        self.agent = PPOAgent(self.env, self.params)
 
     def train(self, n_itr, policy):
         # perform RL training loop
@@ -43,7 +46,7 @@ class RL_Trainer(object):
         return
 
 
-class Agent(object):
+class PPOAgent(object):
 
     def __init__(self, env, params):
 
@@ -51,7 +54,8 @@ class Agent(object):
         self.env = env
 
         args = None
-        self.actor = Policy(args)
+        self.actor = PPOPolicy(args)
+        self.critic = PPOCritic(args)
 
         self.replay_buffer = ReplayBuffer(args)
 
@@ -64,18 +68,84 @@ class Agent(object):
         return
 
 
-class Policy(object):
+class PPOPolicy(object):
 
-    def __init__(self, params):
+    def __init__(self,
+                 ob_dim,
+                 ac_dim,
+                 n_layers,
+                 size,
+                 device,
+                 learning_rate,
+                 discrete= False,
+                 training=True,
+                 nn_baseline=False):
+
         # initialize network architecture
+
+        self.device = device
+        self.learning_rate = learning_rate
+        self.discrete = discrete
+        self.training = training
+        self.nn_baseline = nn_baseline
+
+        policy_params = {}
+        policy_params['input_dim'] = ob_dim
+        policy_params['output_dim'] = ac_dim
+        for i in range(n_layers-1):
+            policy_params['l' + str(i+1) + '_dim'] = size
+        self.policy = MLP(policy_params)
+        params = list(self.policy.parameters())
+
+        if self.nn_baseline:
+            baseline_params = {}
+            baseline_params['input_dim'] = ob_dim
+            baseline_params['output_dim'] = 1
+            for i in range(n_layers - 1):
+                baseline_params['l' + str(i + 1) + '_dim'] = size
+            self.baseline = MLP(baseline_params)
+            params += list(self.baseline.parameters())
+
+        if self.training:
+            self.optimizer = optim.Adam(params, lr=self.learning_rate)
+
+    def get_log_prob(self, output, action):
+        action = action.to(self.device)
+        if self.discrete:
+            output_probs = nn.functional.log_softmax(output).exp()
+            return torch.distributions.Categorical(output_probs).log_prob(action)
+        else:
+            return torch.distributions.Normal(output[0], output[1]).log_prob(action).sum(-1)
+
+    def update(self, obs, acs, advs):
+        # perform backprop
+        assert type(obs) == torch.Tensor, 'obs must be of type Tensor...'
+        out = self.policy(obs.to(self.device))
+        logprobs = self.get_log_prob(out, acs)
+
+        self.optimizer.zero_grad()
+        # TODO
+
+
+    def get_action(self, obs):
+        # query for action
+        assert type(obs) == torch.Tensor, 'obs must be of type Tensor...'
+        out = self.policy(obs.to(self.device))
+        if self.discrete:
+            action_probs = nn.functional.log_softmax(out).exp()
+            return torch.multinomial(action_probs,1).cpu().detach().numpy()[0]
+        else:
+            return torch.normal(out[0],out[1]).cpu().detach().numpy()
+
+
+class PPOCritic(object):
+
+    def __init__(self):
+        # initialize network architecture for V function
         return
 
     def update(self, *args):
         # perform backprop
-        return
-
-    def get_action(self, ob):
-        # query for action
         return
 
 

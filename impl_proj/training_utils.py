@@ -1,5 +1,5 @@
-from sprites_datagen.moving_sprites import ImplDataset
-from sprites_datagen.rewards import AgentXReward, AgentYReward, TargetXReward, TargetYReward
+from sprites_datagen.moving_sprites import EncoderDataset, DecoderDataset
+from sprites_datagen.rewards import *
 import torch
 import torch.nn as nn
 import numpy as np
@@ -36,18 +36,36 @@ class MLP(nn.Module):
             out = layer(out)
         return out
 
+    def save(self, file):
+        torch.save(self.state_dict(), file)
+
+    def restore(self, file):
+        self.load_state_dict(torch.load(file))
+
 
 '''Encoder/decoder stuff here'''
-def loadEncoderData(spec, new=False, path='./data', batch_size=16, train_num=5000, val_num=1000, test_num=1000):
+def loadVAEData(spec,
+                path,
+                decoder=False,
+                new=False,
+                batch_size=16,
+                train_num=5000,
+                val_num=1000,
+                test_num=1000):
 
     """Return dataloaders for train/val/test datasets"""
     train = path + '/train.data'
     val = path + '/val.data'
     test = path + '/test.data'
     try:
-        train_dataset = ImplDataset(spec, train_num, train) if new else torch.load(train)
-        val_dataset = ImplDataset(spec, val_num, val) if new else torch.load(val)
-        test_dataset = ImplDataset(spec, test_num, test) if new else torch.load(test)
+        if decoder:
+            train_dataset = DecoderDataset(spec, train_num, train) if new else torch.load(train)
+            val_dataset = DecoderDataset(spec, val_num, val) if new else torch.load(val)
+            test_dataset = DecoderDataset(spec, test_num, test) if new else torch.load(test)
+        else:
+            train_dataset = EncoderDataset(spec, train_num, train) if new else torch.load(train)
+            val_dataset = EncoderDataset(spec, val_num, val) if new else torch.load(val)
+            test_dataset = EncoderDataset(spec, test_num, test) if new else torch.load(test)
     except Exception as err:
         print('Error when loading dataset: ' + err)
 
@@ -58,17 +76,19 @@ def loadEncoderData(spec, new=False, path='./data', batch_size=16, train_num=500
 
 
 def trainEncoder(model,
+                 rewards,
                  optimizer,
+                 scheduler,
                  loader_train,
                  loader_val,
                  file,
                  device,
-                 dtype=torch.float32,
+                 dtype,
                  epochs=100,
                  print_every=100):
 
     """Training function"""
-    print("Training starts.")
+    print("Training Encoder starts.")
     print()
     model = model.to(device=device)
     criterion = nn.MSELoss()
@@ -77,82 +97,120 @@ def trainEncoder(model,
         for i, sample in enumerate(loader_train):
             model.train()
 
-            tm2 = sample['images'][:,0,:,:,:].to(device=device, dtype=dtype)
-            tm1 = sample['images'][:,1,:,:,:].to(device=device, dtype=dtype)
-            t = sample['images'][:,2,:,:,:].to(device=device, dtype=dtype)
+            ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(10)]
+            ys = [sample['rewards'][reward].narrow(1,10,20).to(device=device, dtype=dtype) for reward in rewards]
+            # (1, predictor_params['input_sequence_length'], predictor_params['sequence_length'])
 
-            yax = sample['rewards']['agent_x'].narrow(1,3,27).to(device=device, dtype=dtype)
-            yay = sample['rewards']['agent_y'].narrow(1,3,27).to(device=device, dtype=dtype)
-            ytx = sample['rewards']['target_x'].narrow(1,3,27).to(device=device, dtype=dtype)
-            yty = sample['rewards']['target_y'].narrow(1,3,27).to(device=device, dtype=dtype)
-
-            out = model(tm2, tm1, t)
-            # out, decoder_out = model(tm2, tm1, t)
-            loss_ax = criterion(out[0], yax)
-            loss_ay = criterion(out[1], yay)
-            loss_tx = criterion(out[2], ytx)
-            loss_ty = criterion(out[3], yty)
-            loss_encoder = loss_ax + loss_ay + loss_tx + loss_ty
-
-            # loss_tm2 = criterion(decoder_out[0], tm2)
-            # loss_tm1 = criterion(decoder_out[1], tm1)
-            # loss_t = criterion(decoder_out[2], t)
-            # loss_decoder = loss_tm2 + loss_tm1 + loss_t
+            out = model(ts)
+            losses = [criterion(out[index], ys[index]) for index in range(7)]
+            loss_encoder = sum(losses)
 
             optimizer.zero_grad()
             loss_encoder.backward()
-            # loss_decoder.backward()
             optimizer.step()
 
             if i % print_every == 0:
-                # print('Epoch %d, Iteration %d, encoder loss = %.4f, decoder loss = %.4f'
-                #       % (e, i, loss_encoder.item(), loss_decoder.item()))
                 print('Epoch %d, Iteration %d, encoder loss = %.4f' % (e, i, loss_encoder.item()))
-                validateEncoder(model, loader_val, device)
+                validateEncoder(model, rewards, loader_val, device)
                 print()
+
+        scheduler.step()
 
     torch.save(model.state_dict(), file)
     print("Training complete. Model saved to disk.")
     print()
 
 
-def validateEncoder(model, loader, device, dtype=torch.float32):
+def validateEncoder(model, rewards, loader, device, dtype=torch.float32):
 
     """Validation function"""
     criterion = nn.MSELoss()
     model = model.to(device=device)
     model.eval()
     loss_encoder = 0.0
-    # loss_decoder = 0.0
     count = 0
 
     with torch.no_grad():
         for i, sample in enumerate(loader):
-            tm2 = sample['images'][:, 0, :, :, :].to(device=device, dtype=dtype)
-            tm1 = sample['images'][:, 1, :, :, :].to(device=device, dtype=dtype)
-            t = sample['images'][:, 2, :, :, :].to(device=device, dtype=dtype)
+            ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(10)]
+            ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype) for reward in rewards]
 
-            yax = sample['rewards']['agent_x'].narrow(1, 3, 27).to(device=device, dtype=dtype)
-            yay = sample['rewards']['agent_y'].narrow(1, 3, 27).to(device=device, dtype=dtype)
-            ytx = sample['rewards']['target_x'].narrow(1, 3, 27).to(device=device, dtype=dtype)
-            yty = sample['rewards']['target_y'].narrow(1, 3, 27).to(device=device, dtype=dtype)
-
-            out = model(tm2, tm1, t)
-            # out, decoder_out = model(tm2, tm1, t)
-            loss_ax = criterion(out[0], yax)
-            loss_ay = criterion(out[1], yay)
-            loss_tx = criterion(out[2], ytx)
-            loss_ty = criterion(out[3], yty)
-            loss_encoder += loss_ax + loss_ay + loss_tx + loss_ty
-
-            # loss_tm2 = criterion(decoder_out[0], tm2)
-            # loss_tm1 = criterion(decoder_out[1], tm1)
-            # loss_t = criterion(decoder_out[2], t)
-            # loss_decoder += loss_tm2 + loss_tm1 + loss_t
-
+            out = model(ts)
+            losses = [criterion(out[index], ys[index]) for index in range(7)]
+            loss_encoder += sum(losses)
             count += 1
 
         print('Evaulation on validation dataset: Encoder got average loss: %.4f' % (loss_encoder / count))
+        print()
+
+
+def trainDecoder(model,
+                 optimizer,
+                 scheduler,
+                 loader_train,
+                 loader_val,
+                 file,
+                 device,
+                 dtype,
+                 vertical,
+                 epochs=100,
+                 print_every=100):
+
+    """Training encoder first"""
+    print("Training Decoder starts.")
+    print()
+
+    model = model.to(device=device)
+    criterion = nn.MSELoss()
+
+    for e in range(epochs):
+        for i, sample in enumerate(loader_train):
+            model.train()
+
+            ts = sample['images'].to(device=device, dtype=dtype)
+            ys = sample['rewards']['vertical_position' if vertical else 'horizontal_position']\
+                .to(device=device, dtype=dtype)
+
+            out = model(ts)
+            loss_decoder = criterion(out, ys) # TODO
+
+            optimizer.zero_grad()
+            loss_decoder.backward()
+            optimizer.step()
+
+            if i % print_every == 0:
+                print('Epoch %d, Iteration %d, decoder loss = %.4f' % (e, i, loss_decoder.item()))
+                validateDecoder(model, loader_val, vertical, device)
+                print()
+
+        scheduler.step()
+
+    torch.save(model.state_dict(), file)
+    print("Training complete. Model saved to disk.")
+    print()
+
+
+def validateDecoder(model, loader, vertical, device, dtype=torch.float32):
+
+    """Validation function"""
+    criterion = nn.MSELoss()
+    model = model.to(device=device)
+    model.eval()
+    loss_decoder = 0.0
+    count = 0
+
+    with torch.no_grad():
+        for i, sample in enumerate(loader):
+
+            ts = sample['images'].to(device=device, dtype=dtype)
+            ys = sample['rewards']['vertical_position' if vertical else 'horizontal_position'] \
+                .to(device=device, dtype=dtype)
+
+            out = model(ts)
+            loss_decoder += criterion(out, ys) # TODO
+            count += 1
+
+        print('Evaulation on validation dataset: Decoder got average loss: %.4f' % (loss_decoder / count))
         print()
 
 
@@ -211,15 +269,31 @@ def sample_trajectory(env, policy, max_path_length):
 '''Driver program to generate encoder dataset'''
 if __name__ == "__main__":
 
+    # # complete encoder spec
+    # spec = AttrDict(
+    #     resolution=64,
+    #     max_seq_len=30,
+    #     max_speed=0.05,
+    #     obj_size=0.2,
+    #     shapes_per_traj=3,
+    #     rewards=[ZeroReward, VertPosReward, HorPosReward, AgentXReward, AgentYReward, TargetXReward, TargetYReward],
+    # )
+
+    # decoder training spec
     spec = AttrDict(
         resolution=64,
         max_seq_len=30,
         max_speed=0.05,
         obj_size=0.2,
-        shapes_per_traj=4,
-        rewards=[AgentXReward, AgentYReward, TargetXReward, TargetYReward],
+        shapes_per_traj=1,
+        rewards=[VertPosReward, HorPosReward],
     )
 
     # Generate a small encoder dataset for overfitting test
-    train_loader, val_loader, test_loader = \
-        loadEncoderData(spec, new=True, batch_size=4, train_num=20, val_num=4, test_num=4)
+    train_loader, val_loader, test_loader = loadVAEData(spec,
+                                                        path='./data/data_decoder',
+                                                        decoder=True,
+                                                        new=True,
+                                                        train_num=1000,
+                                                        val_num=200,
+                                                        test_num=200)
