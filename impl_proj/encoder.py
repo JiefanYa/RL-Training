@@ -32,7 +32,7 @@ class Encoder(nn.Module):
         out = x
         for layer in self.layers:
             out = layer(out)
-        out = torch.squeeze(out)
+        out = torch.squeeze(out) # if batch size = 1 it will break, give it axis
         out = self.mapping(out)
         return out
 
@@ -117,12 +117,13 @@ class EncoderModel(nn.Module):
         zts = [self.encoder(t) for t in ts]
 
         if decode_flag:
-            return zts
+            return [zt.detach() for zt in zts]
 
         h1tT = self.predictor(zts) # (batch_size, seq_len, hidden_dim)
         reward_estimates = []
         for head in self.reward_heads:
             rewards = []
+            # use batchify, and batchify back
             for t in range(h1tT.shape[1]):
                 input = h1tT[:,t,:]
                 rewards.append(head(input))
@@ -144,7 +145,7 @@ class DecoderModel(nn.Module):
 
     def forward(self, ts):
         zts = self.encoder_model(ts, decode_flag=True)
-        zts_decode = [self.decoder(zt.detach()) for zt in zts]
+        zts_decode = [self.decoder(zt) for zt in zts]
         return zts_decode
 
 
@@ -174,6 +175,8 @@ def run(params):
     decoder_vert_file = params['decoder_vert_path']
     decoder_hori_file = params['decoder_hori_path']
     load_decoder_models = params['load_decoder_models']
+    train_decoder_only = params['train_decoder_only']
+    train_encoder_only = params['train_encoder_only']
 
     train_loader, val_loader, test_loader = \
         loadVAEData(spec, data_path, decoder=train_decoder, new=load_new_data)
@@ -186,18 +189,21 @@ def run(params):
         decoder_vert = DecoderModel()
         decoder_hori = DecoderModel()
 
-
     if load_model and not train_decoder:
         model.load_state_dict(torch.load(file))
+        print('Encoder model loaded')
     if load_model and train_decoder:
         encoder_vert.load_state_dict(torch.load(encoder_vert_file))
         encoder_hori.load_state_dict(torch.load(encoder_hori_file))
+        print('Encoder models (vert & hori) loaded')
+        decoder_vert.load_encoder(encoder_vert)
+        decoder_hori.load_encoder(encoder_hori)
+        print('Encoder models loaded into decoders (vert & hori)')
 
     if load_decoder_models:
-        decoder_vert.load_encoder(encoder_vert) # (?)
-        decoder_hori.load_encoder(encoder_hori)
-        decoder_vert.load_state_dict(torch.load(decoder_vert_file)) # (?)
+        decoder_vert.load_state_dict(torch.load(decoder_vert_file))
         decoder_hori.load_state_dict(torch.load(decoder_hori_file))
+        print('Decoder models (vert & hori) loaded')
 
     if not train_decoder:
         # train encoder model
@@ -215,69 +221,70 @@ def run(params):
                      epochs=epochs)
     else:
         # train decoder model, first train encoder
-        optimizer_encoder_vert = optim.Adam(encoder_vert.parameters(), lr=lr, weight_decay=weight_decay)
-        optimizer_encoder_hori = optim.Adam(encoder_hori.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler_encoder_vert = optim.lr_scheduler.ExponentialLR(optimizer_encoder_vert, gamma)
-        scheduler_encoder_hori = optim.lr_scheduler.ExponentialLR(optimizer_encoder_hori, gamma)
+        if not train_decoder_only:
+            optimizer_encoder_vert = optim.Adam(encoder_vert.parameters(), lr=lr, weight_decay=weight_decay)
+            optimizer_encoder_hori = optim.Adam(encoder_hori.parameters(), lr=lr, weight_decay=weight_decay)
+            scheduler_encoder_vert = optim.lr_scheduler.ExponentialLR(optimizer_encoder_vert, gamma)
+            scheduler_encoder_hori = optim.lr_scheduler.ExponentialLR(optimizer_encoder_hori, gamma)
 
-        # vertical
-        trainEncoder(encoder_vert,
-                     ['vertical_position'],
-                     optimizer_encoder_vert,
-                     scheduler_encoder_vert,
-                     train_loader,
-                     val_loader,
-                     encoder_vert_file,
-                     device,
-                     dtype,
-                     epochs=epochs)
-        # horizontal
-        trainEncoder(encoder_hori,
-                     ['horizontal_position'],
-                     optimizer_encoder_hori,
-                     scheduler_encoder_hori,
-                     train_loader,
-                     val_loader,
-                     encoder_hori_file,
-                     device,
-                     dtype,
-                     epochs=epochs)
+            trainEncoder(encoder_vert,
+                         ['vertical_position'],
+                         optimizer_encoder_vert,
+                         scheduler_encoder_vert,
+                         train_loader,
+                         val_loader,
+                         encoder_vert_file,
+                         device,
+                         dtype,
+                         epochs=epochs)
+            print('Encoder_vert model finished training')
+            trainEncoder(encoder_hori,
+                         ['horizontal_position'],
+                         optimizer_encoder_hori,
+                         scheduler_encoder_hori,
+                         train_loader,
+                         val_loader,
+                         encoder_hori_file,
+                         device,
+                         dtype,
+                         epochs=epochs)
+            print('Encoder_hori model finished training')
+            decoder_vert.load_encoder(encoder_vert)
+            decoder_hori.load_encoder(encoder_hori)
+            print('Encoder models loaded into decoders (vert & hori)')
 
-        # then train decoder
-        decoder_vert.load_encoder(encoder_vert)
-        decoder_hori.load_encoder(encoder_hori)
-        optimizer_decoder_vert = optim.Adam(decoder_vert.parameters(), lr=lr, weight_decay=weight_decay)
-        optimizer_decoder_hori = optim.Adam(decoder_hori.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler_decoder_vert = optim.lr_scheduler.ExponentialLR(optimizer_decoder_vert, gamma)
-        scheduler_decoder_hori = optim.lr_scheduler.ExponentialLR(optimizer_decoder_hori, gamma)
+        if not train_encoder_only:
+            # then train decoder
+            optimizer_decoder_vert = optim.Adam(decoder_vert.parameters(), lr=lr, weight_decay=weight_decay)
+            optimizer_decoder_hori = optim.Adam(decoder_hori.parameters(), lr=lr, weight_decay=weight_decay)
+            scheduler_decoder_vert = optim.lr_scheduler.ExponentialLR(optimizer_decoder_vert, gamma)
+            scheduler_decoder_hori = optim.lr_scheduler.ExponentialLR(optimizer_decoder_hori, gamma)
 
-        # vertical
-        trainDecoder(decoder_vert,
-                     optimizer_decoder_vert,
-                     scheduler_decoder_vert,
-                     train_loader,
-                     val_loader,
-                     decoder_vert_file,
-                     device,
-                     dtype,
-                     vertical=True,
-                     epochs=epochs)
-        # horizontal
-        trainDecoder(decoder_hori,
-                     optimizer_decoder_hori,
-                     scheduler_decoder_hori,
-                     train_loader,
-                     val_loader,
-                     decoder_hori_file,
-                     device,
-                     dtype,
-                     vertical=False,
-                     epochs=epochs)
+            trainDecoder(decoder_vert,
+                         optimizer_decoder_vert,
+                         scheduler_decoder_vert,
+                         train_loader,
+                         val_loader,
+                         decoder_vert_file,
+                         device,
+                         dtype,
+                         epochs=epochs)
+            print('Decoder_vert model finished training')
+            trainDecoder(decoder_hori,
+                         optimizer_decoder_hori,
+                         scheduler_decoder_hori,
+                         train_loader,
+                         val_loader,
+                         decoder_hori_file,
+                         device,
+                         dtype,
+                         epochs=epochs)
+            print('Decoder_hori model finished training')
 
 
 if __name__ == "__main__":
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dtype = torch.float32
 
     # encoder training spec
@@ -302,12 +309,12 @@ if __name__ == "__main__":
 
     params = {}
 
-    # implement predictor_parans
+    # predictor params
     predictor_params = {}
     predictor_params['input_sequence_length'] = 10
     predictor_params['sequence_length'] = 20
 
-    # implement reward_mlp_params
+    # reward params
     reward_mlp_params = {}
     reward_mlp_params['num_layers'] = 3
     reward_mlp_params['input_dim'] = 256  # assert == predictor.hidden_size
@@ -315,39 +322,42 @@ if __name__ == "__main__":
     reward_mlp_params['l2_dim'] = 64
     reward_mlp_params['output_dim'] = 1
 
-    # model_parans
+    # encoder_model params
     model_params = {}
     model_params['predictor_params'] = predictor_params
     model_params['reward_mlp_params'] = reward_mlp_params
-    model_params['reward_heads_num'] = 7 # decoder: 1
+    model_params['reward_heads_num'] = 7 # encoder: 7
     params['model_params'] = model_params
 
-    # training params
-    params['spec'] = spec
-    params['device'] = device
-    params['dtype'] = dtype
+    # encoder params
     params['model_path'] = './models/encoder_09_17.pt'
-    params['data_path'] = './data/data_encoder'
-    params['new_model_path'] = None
-    params['load_model'] = False
-    params['load_new_data'] = False
     params['rewards'] = \
         ['zero', 'vertical_position', 'horizontal_position', 'agent_x', 'agent_y', 'target_x', 'target_y']
-    # decoder: ['vertical_position'] and ['horizontal_position']
-
-    # hyper params
-    params['learning_rate'] = 5e-4
-    params['scheduler_gamma'] = 0.75
-    params['scheduler_step_size'] = 20
-    params['weight_decay'] = 1e-3
-    params['epochs'] = 200
-
     # decoder params
-    params['train_decoder'] = False
     params['encoder_vert_path'] = './models/encoder_vert_09_17.pt'
     params['encoder_hori_path'] = './models/encoder_hori_09_17.pt'
     params['decoder_vert_path'] = './models/decoder_vert_09_17.pt'
     params['decoder_hori_path'] = './models/decoder_hori_09_17.pt'
-    params['load_decoder_models'] = False
+
+    # training params (seldom changed)
+    params['spec'] = spec
+    params['device'] = device
+    params['dtype'] = dtype
+    params['new_model_path'] = None
+    params['load_new_data'] = False
+    # training params (need changing)
+    params['data_path'] = './data/data_decoder' # encoder: './data/data_encoder'
+    params['load_model'] = True # load encoder_models
+    params['load_decoder_models'] = False # load decoder_models
+    params['train_decoder'] = False  # encoder: False
+    params['train_decoder_only'] = False
+    params['train_encoder_only'] = False
+
+    # hyper params
+    params['learning_rate'] = 1e-3 # 3.5e-4
+    params['scheduler_gamma'] = 0.9
+    params['scheduler_step_size'] = 500
+    params['weight_decay'] = 1e-3
+    params['epochs'] = 200
 
     run(params)

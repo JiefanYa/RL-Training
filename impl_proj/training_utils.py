@@ -48,7 +48,7 @@ def loadVAEData(spec,
                 path,
                 decoder=False,
                 new=False,
-                batch_size=16,
+                batch_size=32,
                 train_num=5000,
                 val_num=1000,
                 test_num=1000):
@@ -98,11 +98,13 @@ def trainEncoder(model,
             model.train()
 
             ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(10)]
+            # min = min(sample['images'])
+            # max = max(sample['images'])
             ys = [sample['rewards'][reward].narrow(1,10,20).to(device=device, dtype=dtype) for reward in rewards]
             # (1, predictor_params['input_sequence_length'], predictor_params['sequence_length'])
 
             out = model(ts)
-            losses = [criterion(out[index], ys[index]) for index in range(7)]
+            losses = [criterion(out[index], ys[index]) for index in range(len(rewards))]
             loss_encoder = sum(losses)
 
             optimizer.zero_grad()
@@ -117,7 +119,7 @@ def trainEncoder(model,
         scheduler.step()
 
     torch.save(model.state_dict(), file)
-    print("Training complete. Model saved to disk.")
+    print("Training complete. Encoder model saved to disk.")
     print()
 
 
@@ -136,7 +138,7 @@ def validateEncoder(model, rewards, loader, device, dtype=torch.float32):
             ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype) for reward in rewards]
 
             out = model(ts)
-            losses = [criterion(out[index], ys[index]) for index in range(7)]
+            losses = [criterion(out[index], ys[index]) for index in range(len(rewards))]
             loss_encoder += sum(losses)
             count += 1
 
@@ -152,7 +154,6 @@ def trainDecoder(model,
                  file,
                  device,
                  dtype,
-                 vertical,
                  epochs=100,
                  print_every=100):
 
@@ -167,12 +168,11 @@ def trainDecoder(model,
         for i, sample in enumerate(loader_train):
             model.train()
 
-            ts = sample['images'].to(device=device, dtype=dtype)
-            ys = sample['rewards']['vertical_position' if vertical else 'horizontal_position']\
-                .to(device=device, dtype=dtype)
-
+            ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(30)]
             out = model(ts)
-            loss_decoder = criterion(out, ys) # TODO
+
+            losses = [criterion(out[index], ts[index]) for index in range(len(out))]
+            loss_decoder = sum(losses)
 
             optimizer.zero_grad()
             loss_decoder.backward()
@@ -180,17 +180,17 @@ def trainDecoder(model,
 
             if i % print_every == 0:
                 print('Epoch %d, Iteration %d, decoder loss = %.4f' % (e, i, loss_decoder.item()))
-                validateDecoder(model, loader_val, vertical, device)
+                validateDecoder(model, loader_val, device)
                 print()
 
         scheduler.step()
 
     torch.save(model.state_dict(), file)
-    print("Training complete. Model saved to disk.")
+    print("Training complete. Decoder model saved to disk.")
     print()
 
 
-def validateDecoder(model, loader, vertical, device, dtype=torch.float32):
+def validateDecoder(model, loader, device, dtype=torch.float32):
 
     """Validation function"""
     criterion = nn.MSELoss()
@@ -202,12 +202,11 @@ def validateDecoder(model, loader, vertical, device, dtype=torch.float32):
     with torch.no_grad():
         for i, sample in enumerate(loader):
 
-            ts = sample['images'].to(device=device, dtype=dtype)
-            ys = sample['rewards']['vertical_position' if vertical else 'horizontal_position'] \
-                .to(device=device, dtype=dtype)
-
+            ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(30)]
             out = model(ts)
-            loss_decoder += criterion(out, ys) # TODO
+
+            losses = [criterion(out[index], ts[index]) for index in range(len(out))]
+            loss_decoder += sum(losses)
             count += 1
 
         print('Evaulation on validation dataset: Decoder got average loss: %.4f' % (loss_decoder / count))
