@@ -5,6 +5,7 @@ import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader
 from general_utils import AttrDict
+import wandb
 
 
 '''MLP module'''
@@ -75,18 +76,18 @@ def loadVAEData(spec,
     return train_loader, val_loader, test_loader
 
 
-def trainEncoder(model,
-                 rewards,
-                 optimizer,
-                 scheduler,
-                 loader_train,
-                 loader_val,
-                 file,
-                 device,
-                 dtype,
-                 epochs=100,
-                 print_every=100):
-
+def trainEncoderDecoder(model,
+                        rewards,
+                        train_decoder,
+                        optimizer,
+                        scheduler,
+                        loader_train,
+                        loader_val,
+                        model_path,
+                        device,
+                        dtype,
+                        epochs=100,
+                        print_every=100):
     """Training function"""
     print("Training Encoder starts.")
     print()
@@ -97,120 +98,87 @@ def trainEncoder(model,
         for i, sample in enumerate(loader_train):
             model.train()
 
-            ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(10)]
-            # min = min(sample['images'])
-            # max = max(sample['images'])
-            ys = [sample['rewards'][reward].narrow(1,10,20).to(device=device, dtype=dtype) for reward in rewards]
-            # (1, predictor_params['input_sequence_length'], predictor_params['sequence_length'])
+            ts = [sample['images'][:, index, :, :, :].to(device=device, dtype=dtype) for index in range(10)]
+            ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype) for reward in rewards]
 
-            out = model(ts)
-            losses = [criterion(out[index], ys[index]) for index in range(len(rewards))]
-            loss_encoder = sum(losses)
+            if train_decoder:
+                out, images = model(ts)
+                loss_decoder = [criterion(images[index], ts[index]) for index in range(len(images))]
+                loss_decoder = sum(loss_decoder)
+            else:
+                out = model(ts)
+                loss_decoder = [0]
+
+            loss_encoder = [criterion(out[index], ys[index]) for index in range(len(rewards))]
+            loss_encoder = sum(loss_encoder)
+            loss = loss_encoder + loss_decoder
 
             optimizer.zero_grad()
-            loss_encoder.backward()
+            loss.backward()
             optimizer.step()
 
             if i % print_every == 0:
-                print('Epoch %d, Iteration %d, encoder loss = %.4f' % (e, i, loss_encoder.item()))
-                validateEncoder(model, rewards, loader_val, device)
+                print('Training set: Epoch %d, Iteration %d, model loss = %.4f, encoder loss = %.4f, decoder loss = %.4f'
+                      % (e, i, loss.item(), loss_encoder.item(), loss_decoder.item()))
+                validateEncoderDecoder(model, rewards, train_decoder, loader_val, device, dtype)
                 print()
 
-        scheduler.step()
+        if scheduler:
+            print('Performing scheduler step...')
+            scheduler.step()
 
-    torch.save(model.state_dict(), file)
+    torch.save(model.state_dict(), model_path)
     print("Training complete. Encoder model saved to disk.")
     print()
 
 
-def validateEncoder(model, rewards, loader, device, dtype=torch.float32):
-
+def validateEncoderDecoder(model, rewards, train_decoder, loader, device, dtype):
     """Validation function"""
+    print('Running validation...')
     criterion = nn.MSELoss()
     model = model.to(device=device)
     model.eval()
-    loss_encoder = 0.0
+    loss_encoder_total = 0.0
+    loss_decoder_total = 0.0
     count = 0
+    log_image = False
 
     with torch.no_grad():
         for i, sample in enumerate(loader):
-            ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(10)]
+
+            ts = [sample['images'][:, index, :, :, :].to(device=device, dtype=dtype) for index in range(10)]
             ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype) for reward in rewards]
 
-            out = model(ts)
-            losses = [criterion(out[index], ys[index]) for index in range(len(rewards))]
-            loss_encoder += sum(losses)
+            if train_decoder:
+                out, images = model(ts)
+                loss_decoder = [criterion(images[index], ts[index]) for index in range(len(images))]
+                if not log_image:
+                    index = np.random.randint(ts[0].size(0))
+                    originals = [t[index,:,:,:].cpu().numpy() for t in ts]
+                    originals = [wandb.Image(np.moveaxis(x, 0, 2), caption='Ground Truth') for x in originals]
+                    predictions = [image[index,:,:,:].cpu().numpy() for image in images]
+                    predictions = [wandb.Image(np.moveaxis(x,0,2), caption='Prediction') for x in predictions]
+                    log_image = True
+            else:
+                out = model(ts)
+                loss_decoder = [0]
+
+            loss_encoder = [criterion(out[index], ys[index]) for index in range(len(rewards))]
+            loss_encoder_total += sum(loss_encoder)
+            loss_decoder_total += sum(loss_decoder)
             count += 1
 
-        print('Evaulation on validation dataset: Encoder got average loss: %.4f' % (loss_encoder / count))
-        print()
-
-
-def trainDecoder(model,
-                 optimizer,
-                 scheduler,
-                 loader_train,
-                 loader_val,
-                 file,
-                 device,
-                 dtype,
-                 epochs=100,
-                 print_every=100):
-
-    """Training encoder first"""
-    print("Training Decoder starts.")
+    print('Validation set: average encoder loss: %.4f, average decoder loss: %.4f'
+          % (loss_encoder_total / count, loss_decoder_total / count))
     print()
-
-    model = model.to(device=device)
-    criterion = nn.MSELoss()
-
-    for e in range(epochs):
-        for i, sample in enumerate(loader_train):
-            model.train()
-
-            ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(30)]
-            out = model(ts)
-
-            losses = [criterion(out[index], ts[index]) for index in range(len(out))]
-            loss_decoder = sum(losses)
-
-            optimizer.zero_grad()
-            loss_decoder.backward()
-            optimizer.step()
-
-            if i % print_every == 0:
-                print('Epoch %d, Iteration %d, decoder loss = %.4f' % (e, i, loss_decoder.item()))
-                validateDecoder(model, loader_val, device)
-                print()
-
-        scheduler.step()
-
-    torch.save(model.state_dict(), file)
-    print("Training complete. Decoder model saved to disk.")
-    print()
-
-
-def validateDecoder(model, loader, device, dtype=torch.float32):
-
-    """Validation function"""
-    criterion = nn.MSELoss()
-    model = model.to(device=device)
-    model.eval()
-    loss_decoder = 0.0
-    count = 0
-
-    with torch.no_grad():
-        for i, sample in enumerate(loader):
-
-            ts = [sample['images'][:,index,:,:,:].to(device=device, dtype=dtype) for index in range(30)]
-            out = model(ts)
-
-            losses = [criterion(out[index], ts[index]) for index in range(len(out))]
-            loss_decoder += sum(losses)
-            count += 1
-
-        print('Evaulation on validation dataset: Decoder got average loss: %.4f' % (loss_decoder / count))
-        print()
+    if train_decoder:
+        wandb.log({'Encoder loss': loss_encoder_total / count,
+                   'Decoder loss': loss_decoder_total / count,
+                   'Ground Truths': originals,
+                   'Predictions wrt Vertical Reward': predictions})
+    else:
+        wandb.log({'Encoder loss': loss_encoder_total / count,
+                   'Decoder loss': loss_decoder_total / count})
 
 
 '''RL stuff here'''

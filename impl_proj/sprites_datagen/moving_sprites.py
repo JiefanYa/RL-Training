@@ -202,44 +202,21 @@ if __name__ == '__main__':
     # gen = DistractorTemplateMovingSpritesGenerator(spec)
     gen = SingleMovingSpritesGenerator(spec)
     traj = gen.gen_trajectory()
-    # tmp = traj.images[None, :, None]
-    # tmp = tmp.repeat(3, axis=2).astype(np.float32)
-    # img = make_image_seq_strip([tmp], sep_val=255.0).astype(np.uint8)
     img = make_image_seq_strip([traj.images[None, :, None].repeat(3, axis=2).astype(np.float32)], sep_val=255.0).astype(np.uint8)
     cv2.imwrite("original.png", img[0].transpose(1, 2, 0))
 
     from encoder import *
 
-    predictor_params = {}
-    predictor_params['input_sequence_length'] = 10
-    predictor_params['sequence_length'] = 20
-    reward_mlp_params = {}
-    reward_mlp_params['num_layers'] = 3
-    reward_mlp_params['input_dim'] = 256  # assert == predictor.hidden_size
-    reward_mlp_params['l1_dim'] = 256
-    reward_mlp_params['l2_dim'] = 64
-    reward_mlp_params['output_dim'] = 1
-    model_params = {}
-    model_params['predictor_params'] = predictor_params
-    model_params['reward_mlp_params'] = reward_mlp_params
-    model_params['reward_heads_num'] = 1
-
-    encoder_vert = EncoderModel(model_params)
-    encoder_hori = EncoderModel(model_params)
-    decoder_vert = DecoderModel()
-    decoder_hori = DecoderModel()
-    encoder_vert.load_state_dict(torch.load('../models/encoder_vert_09_17.pt'))
-    encoder_hori.load_state_dict(torch.load('../models/encoder_hori_09_17.pt'))
-    decoder_vert.load_encoder(encoder_vert)
-    decoder_hori.load_encoder(encoder_hori)
-    decoder_vert.load_state_dict(torch.load('../models/decoder_vert_09_17.pt'))
-    decoder_hori.load_state_dict(torch.load('../models/decoder_hori_09_17.pt'))
+    model_vert = EncoderDecoderModel(1, train_decoder=True)
+    model_vert.load_state_dict(torch.load('../models/decoder_vert_09_20.pt'))
+    model_hori = EncoderDecoderModel(1, train_decoder=True)
+    model_hori.load_state_dict(torch.load('../models/decoder_hori_09_20.pt'))
 
     with torch.no_grad():
         input = traj.images[None, :, None].repeat(3, axis=2).astype(np.float32)[0]
         input = [torch.from_numpy(input)]
-        out_vert = decoder_vert(input)[0].numpy()
-        out_hori = decoder_hori(input)[0].numpy()
+        _, out_vert = model_vert(input)[0].numpy()
+        _, out_hori = model_hori(input)[0].numpy()
         out_vert = np.expand_dims(out_vert, axis=0)
         out_hori = np.expand_dims(out_hori, axis=0)
         img_vert = make_image_seq_strip([out_vert], sep_val=255.0).astype(np.uint8)
