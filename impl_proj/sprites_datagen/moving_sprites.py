@@ -26,6 +26,21 @@ class MovingSpriteDataset(Dataset):
         return data_dict
 
 
+class ImplDataset(MovingSpriteDataset):
+
+    def __init__(self, spec, mode='train'):
+        super().__init__(spec)
+        self.mode = mode
+
+    def __len__(self):
+        if self.mode == 'train':
+            return 10000
+        elif self.mode == 'val':
+            return 500
+        else: # assert self.mode == 'test', 'Mode must be one of {train, val, test}'
+            return 1000
+
+
 class EncoderDataset(MovingSpriteDataset):
 
     def __init__(self, spec, num, file):

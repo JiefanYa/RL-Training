@@ -1,4 +1,4 @@
-from sprites_datagen.moving_sprites import EncoderDataset, DecoderDataset
+from sprites_datagen.moving_sprites import EncoderDataset, DecoderDataset, ImplDataset
 from sprites_datagen.rewards import *
 import torch
 import torch.nn as nn
@@ -6,6 +6,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from general_utils import AttrDict
 import wandb
+from datetime import datetime
 
 
 '''MLP module'''
@@ -46,33 +47,42 @@ class MLP(nn.Module):
 
 '''Encoder/decoder stuff here'''
 def loadVAEData(spec,
-                path,
+                batch_size=32,
+                save_to_disk=False,
                 decoder=False,
                 new=False,
-                batch_size=32,
+                path=None,
                 train_num=5000,
                 val_num=1000,
                 test_num=1000):
 
     """Return dataloaders for train/val/test datasets"""
-    train = path + '/train.data'
-    val = path + '/val.data'
-    test = path + '/test.data'
-    try:
-        if decoder:
-            train_dataset = DecoderDataset(spec, train_num, train) if new else torch.load(train)
-            val_dataset = DecoderDataset(spec, val_num, val) if new else torch.load(val)
-            test_dataset = DecoderDataset(spec, test_num, test) if new else torch.load(test)
-        else:
-            train_dataset = EncoderDataset(spec, train_num, train) if new else torch.load(train)
-            val_dataset = EncoderDataset(spec, val_num, val) if new else torch.load(val)
-            test_dataset = EncoderDataset(spec, test_num, test) if new else torch.load(test)
-    except Exception as err:
-        print('Error when loading dataset: ' + err)
+    global train_dataset, val_dataset, test_dataset
+    if save_to_disk:
+        # for test/inspection: save dataset to disk, decoder dataset only has one object
+        train = path + '/train.data'
+        val = path + '/val.data'
+        test = path + '/test.data'
+        try:
+            if decoder:
+                train_dataset = DecoderDataset(spec, train_num, train) if new else torch.load(train)
+                val_dataset = DecoderDataset(spec, val_num, val) if new else torch.load(val)
+                test_dataset = DecoderDataset(spec, test_num, test) if new else torch.load(test)
+            else:
+                train_dataset = EncoderDataset(spec, train_num, train) if new else torch.load(train)
+                val_dataset = EncoderDataset(spec, val_num, val) if new else torch.load(val)
+                test_dataset = EncoderDataset(spec, test_num, test) if new else torch.load(test)
+        except Exception as err:
+            print('Error when loading dataset: ' + str(err))
+    else:
+        train_dataset = ImplDataset(spec, mode='test')
+        val_dataset = ImplDataset(spec, mode='val')
+        test_dataset = ImplDataset(spec, mode='test')
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
+
     return train_loader, val_loader, test_loader
 
 
@@ -87,7 +97,9 @@ def trainEncoderDecoder(model,
                         device,
                         dtype,
                         epochs=100,
-                        print_every=100):
+                        print_every=15,
+                        save_every=30,
+                        validate_every=10):
     """Training function"""
     print("Training Encoder starts.")
     print()
@@ -107,7 +119,7 @@ def trainEncoderDecoder(model,
                 loss_decoder = sum(loss_decoder)
             else:
                 out = model(ts)
-                loss_decoder = [0]
+                loss_decoder = 0
 
             loss_encoder = [criterion(out[index], ys[index]) for index in range(len(rewards))]
             loss_encoder = sum(loss_encoder)
@@ -119,13 +131,22 @@ def trainEncoderDecoder(model,
 
             if i % print_every == 0:
                 print('Training set: Epoch %d, Iteration %d, model loss = %.4f, encoder loss = %.4f, decoder loss = %.4f'
-                      % (e, i, loss.item(), loss_encoder.item(), loss_decoder.item()))
-                validateEncoderDecoder(model, rewards, train_decoder, loader_val, device, dtype)
+                      % (e, i, loss.item(), loss_encoder.item(), loss_decoder.item() if type(loss_decoder) != int else 0))
                 print()
+                wandb.log({'Training encoder loss': loss_encoder.item(),
+                           'Training decoder loss': loss_decoder.item() if type(loss_decoder) != int else 0})
 
         if scheduler:
-            print('Performing scheduler step...')
+            # print('Performing scheduler step...')
             scheduler.step()
+
+        if e % validate_every == 0:
+            validateEncoderDecoder(model, rewards, train_decoder, loader_val, device, dtype)
+
+        if e % save_every == 0:
+            torch.save(model.state_dict(), model_path)
+            print('Model saved to disk on Epoch %d at %s' % (e, datetime.now()))
+            print()
 
     torch.save(model.state_dict(), model_path)
     print("Training complete. Encoder model saved to disk.")
@@ -175,7 +196,7 @@ def validateEncoderDecoder(model, rewards, train_decoder, loader, device, dtype)
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count,
                    'Ground Truths': originals,
-                   'Predictions wrt Vertical Reward': predictions})
+                   'Predictions wrt rewards': predictions})
     else:
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count})

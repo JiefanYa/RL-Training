@@ -53,15 +53,44 @@ class PPOAgent(object):
         self.params = params
         self.env = env
 
-        args = None
-        self.actor = PPOPolicy(args)
-        self.critic = PPOCritic(args)
+        self.ob_dim = self.params['ob_dim']
+        self.ac_dim = self.params['ac_dim']
+        self.device = self.params['device']
+        self.lr = self.params['learning_rate']
+        self.discrete = self.params['discrete']
+        self.gamma = self.params['gamma']
+        self.epsilon = self.params['epsilon']
+        self.value_loss_coeff = self.params['value_loss_coeff']
+        self.entropy_coeff = self.params['entropy_coeff']
+        self.standardize_advantages = self.params['standardize_advantages']
+        self.num_target_updates = self.params['num_target_updates']
+        self.num_grad_steps_per_target_update = self.params['num_grad_steps_per_target_update']
+        self.n_layers = self.params['policy_n_layers']
+        self.size = self.params['policy_layer_size']
 
-        self.replay_buffer = ReplayBuffer(args)
+        self.actor = PPOPolicy(self.ob_dim, self.ac_dim, self.n_layers, self.size, self.device,
+                               self.lr, self.epsilon, self.value_loss_coeff, self.entropy_coeff)
+        self.critic = PPOCritic(self.ob_dim, self.ac_dim, self.n_layers, self.size, self.device,
+                                self.lr, self.gamma, self.num_target_updates, self.num_grad_steps_per_target_update)
 
-    def compute_advantage(self, *args):
-        # compute A*
-        return
+        self.replay_buffer = ReplayBuffer()
+
+    def compute_advantage(self, obs, next_obs, rews, terminals):
+        assert type(obs) == type(next_obs) == type(rews) == type(terminals) == torch.Tensor, \
+            'obs, next_obs, rews, terminals must be of type Tensor...'
+
+        ob, next_ob, rew, done = map(lambda x: x.to(self.device), [obs, next_obs, rews, terminals])
+        value = self.critic.value_func(ob).squeeze()
+        next_value = self.critic.value_func(next_ob).squeeze() * (1 - done)
+        advs = rew + self.gamma * next_value - value
+        advs = advs.cpu().detach()
+
+        if self.standardize_advantages:
+            advs = advs.numpy()
+            advs = (advs - np.mean(advs)) / (np.std(advs) + 1e-8)
+            advs = torch.from_numpy(advs)
+
+        return advs
 
     def train(self, *args):
         # call actor update
@@ -77,17 +106,23 @@ class PPOPolicy(object):
                  size,
                  device,
                  learning_rate,
-                 discrete= False,
+                 epsilon,
+                 value_loss_coeff,
+                 entropy_coeff,
                  training=True,
+                 discrete=True,
                  nn_baseline=False):
 
         # initialize network architecture
 
         self.device = device
         self.learning_rate = learning_rate
+        self.epsilon = epsilon
+        self.value_loss_coeff = value_loss_coeff
+        self.entropy_coeff = entropy_coeff
         self.discrete = discrete
         self.training = training
-        self.nn_baseline = nn_baseline
+        # self.nn_baseline = nn_baseline
 
         policy_params = {}
         policy_params['input_dim'] = ob_dim
@@ -97,14 +132,14 @@ class PPOPolicy(object):
         self.policy = MLP(policy_params)
         params = list(self.policy.parameters())
 
-        if self.nn_baseline:
-            baseline_params = {}
-            baseline_params['input_dim'] = ob_dim
-            baseline_params['output_dim'] = 1
-            for i in range(n_layers - 1):
-                baseline_params['l' + str(i + 1) + '_dim'] = size
-            self.baseline = MLP(baseline_params)
-            params += list(self.baseline.parameters())
+        # if self.nn_baseline:
+        #     baseline_params = {}
+        #     baseline_params['input_dim'] = ob_dim
+        #     baseline_params['output_dim'] = 1
+        #     for i in range(n_layers - 1):
+        #         baseline_params['l' + str(i + 1) + '_dim'] = size
+        #     self.baseline = MLP(baseline_params)
+        #     params += list(self.baseline.parameters())
 
         if self.training:
             self.optimizer = optim.Adam(params, lr=self.learning_rate)
@@ -117,15 +152,28 @@ class PPOPolicy(object):
         else:
             return torch.distributions.Normal(output[0], output[1]).log_prob(action).sum(-1)
 
-    def update(self, obs, acs, advs):
+    def update(self, obs, acs, advs, qvals=None):
         # perform backprop
-        assert type(obs) == torch.Tensor, 'obs must be of type Tensor...'
+        assert type(obs) == torch.Tensor and type(advs) == torch.Tensor, 'obs and advs must be of type Tensor...'
         out = self.policy(obs.to(self.device))
-        logprobs = self.get_log_prob(out, acs)
+        logprob = self.get_log_prob(out, acs)
 
         self.optimizer.zero_grad()
-        # TODO
+        # PG objective
+        policy_loss = torch.sum((-logprob * advs.to(self.device)))
+        # TODO: change to PPO objective
+        policy_loss.backward()
 
+        # if self.nn_baseline:
+        #     baseline_out = self.baseline(obs.to(self.device))
+        #     baseline_target = torch.Tensor((qvals - qvals.mean()) / (qvals.std() + 1e-8)).to(self.device)
+        #     baseline_criterion = nn.MSELoss()
+        #     baseline_loss = baseline_criterion(baseline_out, baseline_target)
+        #     baseline_loss.backward()
+
+        self.optimizer.step()
+
+        return policy_loss
 
     def get_action(self, obs):
         # query for action
@@ -140,13 +188,47 @@ class PPOPolicy(object):
 
 class PPOCritic(object):
 
-    def __init__(self):
-        # initialize network architecture for V function
-        return
+    def __init__(self, ob_dim, ac_dim, n_layers, size, device, learning_rate, gamma,
+                 num_target_updates, num_grad_steps_per_target_updates):
 
-    def update(self, *args):
+        # initialize network architecture for V function estimator
+
+        self.device = device
+        self.learning_rate = learning_rate
+        self.gamma = gamma
+        self.num_target_updates = num_target_updates
+        self.num_grad_steps_per_target_updates = num_grad_steps_per_target_updates
+
+        vf_params = {}
+        vf_params['input_dim'] = ob_dim
+        vf_params['output_dim'] = ac_dim
+        for i in range(n_layers - 1):
+            vf_params['l' + str(i + 1) + '_dim'] = size
+        self.value_func = MLP(vf_params)
+        params = list(self.value_func.parameters())
+
+        self.optimizer = optim.Adam(params, lr=self.learning_rate)
+        self.criterion = nn.MSELoss()
+
+    def update(self, obs, next_obs, rews, terminals):
         # perform backprop
-        return
+        assert type(obs) == type(next_obs) == type(rews) == type(terminals) == torch.Tensor, \
+            'obs, next_obs, rews, terminals must be of type Tensor...'
+        ob, next_ob, rew, done = map(lambda x: x.to(self.device), [obs, next_obs, rews, terminals])
+
+        for update in range(self.num_target_updates * self.num_grad_steps_per_target_updates):
+            if update % self.num_grad_steps_per_target_updates == 0:
+                next_value = self.value_func(next_ob).squeeze() * (1 - done)
+                target_value = rew + self.gamma * next_value
+
+            prediction = self.value_func(ob).squeeze()
+            self.optimizer.zero_grad()
+            loss = self.criterion(prediction, target_value)
+            loss.backward()
+            self.optimizer.step()
+            target_value.detach_()
+
+        return loss
 
 
 class ReplayBuffer(object):

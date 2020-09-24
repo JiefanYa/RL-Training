@@ -177,6 +177,7 @@ def main():
     parser.add_argument('--model_path', '-mp', type=str)
     parser.add_argument('--load_model', '-lm', action='store_true')
     parser.add_argument('--train_decoder', '-td', action='store_true')
+    parser.add_argument('--save_to_disk', action='store_true')
     parser.add_argument('--data_path', '-dp', type=str)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--learning_rate', '-lr', type=float, default=1e-3)
@@ -195,6 +196,7 @@ def main():
     model_path = params['model_path']
     load_model = params['load_model']
     train_decoder = params['train_decoder']
+    save_to_disk = params['save_to_disk']
     data_path = params['data_path']
     batch_size = params['batch_size']
     lr = params['learning_rate']
@@ -225,7 +227,14 @@ def main():
         rewards=reward_classes
     )
 
-    train_loader, val_loader, test_loader = loadVAEData(spec, data_path, decoder=train_decoder, batch_size=batch_size)
+    if save_to_disk:
+        train_loader, val_loader, test_loader = loadVAEData(spec,
+                                                            save_to_disk=True,
+                                                            path=data_path,
+                                                            decoder=train_decoder,
+                                                            batch_size=batch_size)
+    else:
+        train_loader, val_loader, test_loader = loadVAEData(spec, batch_size=batch_size)
 
     model = EncoderDecoderModel(num_reward_heads, train_decoder)
 
