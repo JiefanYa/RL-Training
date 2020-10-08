@@ -19,7 +19,7 @@ class Encoder(nn.Module):
         cnn_layers = []
 
         for i in range(self.num_layers):
-            cnn_layers.append(nn.Conv2d(num_channels if i != 0 else 3, num_channels * 2 if i != 0 else num_channels,
+            cnn_layers.append(nn.Conv2d(num_channels if i != 0 else 1, num_channels * 2 if i != 0 else num_channels,
                                         kernel_size=4, stride=2, padding=1))
             cnn_layers.append(nn.BatchNorm2d(num_channels * 2 if i != 0 else num_channels))
             cnn_layers.append(nn.LeakyReLU())
@@ -41,6 +41,7 @@ class Encoder(nn.Module):
 
         if rl:
             with torch.no_grad():
+                x = torch.unsqueeze(x, dim=0) # insert 1 channel dim
                 return naive_forward(x)
         else:
             return naive_forward(x)
@@ -162,6 +163,7 @@ class VAERewardPredictionModel(nn.Module):
         if rl:
             with torch.no_grad():
                 ts_batch, num = batchify(ts)
+                ts_batch = torch.unsqueeze(ts_batch, dim=1) # insert 1 channel dim
                 zts_batch = self.encoder(ts_batch)
                 zts = unbatchify(zts_batch, num)
                 return zts

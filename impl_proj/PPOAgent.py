@@ -4,14 +4,15 @@ from sprites_env import *
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
+from collections import deque
 import numpy as np
-from training_utils import init, AddBias, sample_trajectories, unpack_paths_to_rollout_components
+from training_utils import init, AddBias
 import time
 import argparse
 import wandb
 import os
-from collections import deque
 from encoder import Encoder, EncoderCNN, EncoderOracle, VAEReconstructionModel, VAERewardPredictionModel
+from multiprocessing_env import SubprocVecEnv, VecNormalize
 
 
 class PPOAgent:
@@ -156,7 +157,7 @@ class Policy(nn.Module):
         else:
             action = dist.sample()
 
-        action_log_probs = dist.log_probs(action)
+        action_log_probs = dist.log_prob(action)
         # dist_entropy = dist.entropy().mean()
 
         return value, action, action_log_probs
@@ -171,7 +172,7 @@ class Policy(nn.Module):
         value, actor_features = self.base(inputs)
         dist = self.dist(actor_features)
 
-        action_log_probs = dist.log_probs(action)
+        action_log_probs = dist.log_prob(action)
         dist_entropy = dist.entropy().mean()
 
         return value, action_log_probs, dist_entropy
@@ -213,7 +214,7 @@ class MLPBase(NNBase):
         return self.critic_linear(hidden_critic), hidden_actor
 
 
-class RolloutStorage(object):
+class RolloutStorage(object): # Question: num_steps?
     def __init__(self, num_steps, num_processes, obs_shape, action_space):
         self.obs = torch.zeros(num_steps + 1, num_processes, *obs_shape)
         self.rewards = torch.zeros(num_steps, num_processes, 1)
@@ -238,13 +239,6 @@ class RolloutStorage(object):
 
     def insert(self, obs, actions, action_log_probs,
                value_preds, rewards, masks, bad_masks=None):
-        # convert ndarray to tensor
-        obs = torch.from_numpy(obs)
-        actions = torch.from_numpy(actions)
-        action_log_probs = torch.from_numpy(action_log_probs)
-        value_preds = torch.from_numpy(value_preds)
-        rewards = torch.from_numpy(rewards)
-
         self.obs[self.step + 1].copy_(obs)
         self.actions[self.step].copy_(actions)
         self.action_log_probs[self.step].copy_(action_log_probs)
@@ -297,70 +291,6 @@ class RolloutStorage(object):
 
             yield obs_batch, actions_batch, value_preds_batch, \
                   return_batch, masks_batch, old_action_log_probs_batch, adv_targ
-
-
-class ReplayBuffer(object):
-
-    def __init__(self, max_size=1000000):
-
-        self.max_size = max_size
-        self.paths = []
-
-        self.obs = None
-        self.rewards = None
-        self.value_preds = None
-        self.actions = None
-        self.action_log_probs = None
-        self.masks = None
-
-        self.returns = None
-
-    def add_rollouts(self, paths):
-
-        for path in paths:
-            self.paths.append(path)
-
-        obs, actions, action_log_probs, value_preds, rewards, masks = unpack_paths_to_rollout_components(paths)
-
-        if self.obs is None:
-            self.obs = obs[-self.max_size:]
-            self.actions = actions[-self.max_size:]
-            self.action_log_probs = action_log_probs[-self.max_size:]
-            self.masks = masks[-self.max_size:]
-            self.rewards = rewards[-self.max_size:]
-            self.value_preds = value_preds[-self.max_size:]
-        else:
-            self.obs = np.concatenate([self.obs, obs])[-self.max_size:]
-            self.actions = np.concatenate([self.actions, actions])[-self.max_size:]
-            self.action_log_probs = np.concatenate([self.action_log_probs, action_log_probs])[-self.max_size:]
-            self.masks = np.concatenate([self.masks, masks])[-self.max_size:]
-            self.rewards = np.concatenate([self.rewards, rewards])[-self.max_size:]
-            self.value_preds = np.concatenate([self.value_preds, value_preds])[-self.max_size:]
-
-    def sample_random_rollouts(self, num):
-        indices = np.random.permutation(len(self.paths))[:num]
-        return self.paths[indices]
-
-    def sample_recent_rollouts(self, num=1):
-        return self.paths[-num:]
-
-    def sample_random_data(self, batch_size):
-        assert self.obs.shape[0] == self.actions.shape[0] == self.action_log_probs.shape[0] \
-               == self.masks.shape[0] == self.rewards.shape[0] == self.value_preds.shape[0]
-
-        indices = np.random.permutation(self.obs.shape[0])[:batch_size]
-        return self.obs[indices], self.actions[indices], self.action_log_probs[indices], \
-               self.value_preds[indices], self.rewards[indices], self.masks[indices]
-
-    def sample_recent_data(self, batch_size=1):
-        return self.obs[-batch_size:], self.actions[-batch_size:], self.action_log_probs[-batch_size:], \
-               self.value_preds[-batch_size:], self.rewards[-batch_size:], self.masks[-batch_size:]
-
-    def compute_returns(self, next_value, gamma, gae_gamma):
-        return
-
-    def __len__(self):
-        return len(self.obs)
 
 
 def get_args():
@@ -479,13 +409,17 @@ def main():
 
     # wandb.config.update(args)
 
-    torch.set_num_threads(1)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dtype = torch.float32
+    # dtype = torch.float32
 
-    env = gym.make(args.env_name)
+    def make_env():
+        return gym.make(args.env_name)
 
-    actor_critic = Policy(env.observation_space.shape, env.action_space, args.baseline)
+    envs = [make_env for _ in range(args.num_processes)]
+    envs = SubprocVecEnv(envs)
+    envs = VecNormalize(envs, gamma=args.gamma)
+
+    actor_critic = Policy(envs.observation_space.shape, envs.action_space, args.baseline)
     actor_critic.to(device)
 
     # wandb.watch(actor_critic)
@@ -501,35 +435,47 @@ def main():
                      max_grad_norm=args.max_grad_norm)
 
     rollouts = RolloutStorage(args.num_steps, args.num_processes,
-                              env.observation_space.shape, env.action_space)
+                              envs.observation_space.shape, envs.action_space)
 
-    ob = env.reset()  # Question: 64 x 64?: 1 x 64 x 64
-    rollouts.obs[0].copy_(torch.from_numpy(ob))
+    obs = envs.reset()
+    rollouts.obs[0].copy_(torch.from_numpy(obs))
     rollouts.to(device)
 
-    episode_rewards = deque(maxlen=10)
+    episode_reward = torch.zeros(args.num_processes, 1)
+    episode_rewards = deque(maxlen=50)
+
+    print('Training starts...')
 
     start = time.time()
-    # num_updates = int(args.num_env_steps // args.num_steps // args.num_processes)
-    for itr in range(args.num_iters):
-        # for step in range(args.num_steps):
-        #     # Sample actions
-        #     with torch.no_grad():
-        #         value, action, action_log_prob = actor_critic.act(rollouts.obs[step])
-        #
-        #     ob, reward, done, _ = env.step(action)
-        #
-        #     # Question: what's an episode? accumulate reward till done is 1
-        #     # Note: reset environment when done
-        #     masks = torch.FloatTensor([[0.0] if done_ else [1.0] for done_ in done])
-        #     rollouts.insert(ob, action, action_log_prob, value, reward, masks)
-        if itr == 0:
-            use_batch_size = args.batch_size_initial
-        else:
-            use_batch_size = args.batch_size
-        paths = sample_trajectories(env, actor_critic, use_batch_size)
-        rollouts.insert(paths)
-        # rollouts.insert(obs, actions, action_log_probs, values, rewards, masks)
+    num_updates = int(args.num_env_steps // args.num_steps // args.num_processes)
+    for itr in range(num_updates):
+        for step in range(args.num_steps):
+            # Sample actions
+            with torch.no_grad():
+                values, actions, action_log_probs = actor_critic.act(rollouts.obs[step])
+
+            obs, rewards, dones, _ = envs.step(actions.squeeze(1).cpu().numpy())
+
+            obs = torch.from_numpy(obs).float()
+            rewards = torch.from_numpy(np.expand_dims(rewards, 1)).float()
+            masks = torch.FloatTensor([[0.0] if done else [1.0] for done in dones])
+            rollouts.insert(obs, actions, action_log_probs, values, rewards, masks)
+
+            # Notes: episode - till done is 1, episode reward - sum of rewards till done is 1
+            # Notes: reset environment when done
+
+            episode_reward += rewards
+            episode_reward *= masks
+            finished_episode_rewards = ((1 - masks) * episode_reward).squeeze()
+            finished_episode_rewards = finished_episode_rewards[finished_episode_rewards > 0]
+            episode_rewards.extend(finished_episode_rewards)
+
+        # if itr == 0:
+        #     use_batch_size = args.batch_size_initial
+        # else:
+        #     use_batch_size = args.batch_size
+        # paths = sample_trajectories(env, actor_critic, use_batch_size)
+        # rollouts.insert(paths)
 
         with torch.no_grad():
             next_value = actor_critic.get_value(rollouts.obs[-1]).detach()
@@ -543,7 +489,7 @@ def main():
         if (itr % args.save_interval == 0 or itr == num_updates - 1) and args.save_dir != "":
             torch.save(actor_critic.state_dict(), os.path.join(args.save_dir, args.env_name + '.pt'))
 
-        if itr % args.log_interval == 0:
+        if itr % args.log_interval == 0 and len(episode_rewards) > 1:
             total_num_steps = (itr + 1) * args.num_processes * args.num_steps
             end = time.time()
 
@@ -560,10 +506,20 @@ def main():
             #            'Min reward': np.min(episode_rewards),
             #            'Max reward': np.max(episode_rewards)})
 
-        if args.eval_interval is not None and itr % args.eval_interval == 0:
+        elif itr % args.log_interval == 0:
+            total_num_steps = (itr + 1) * args.num_processes * args.num_steps
+            end = time.time()
+
+            print('Updates %d, num timesteps %d, FPS %d\n'
+                  'value_loss %.4f, action_loss %.4f, dist_entropy %.4f\n' %
+                  (itr, total_num_steps, int(total_num_steps / (end - start)),
+                   value_loss, action_loss, dist_entropy))
+
+        if args.eval_interval is not None and itr % args.eval_interval == 0 and len(episode_rewards) > 1:
             pass
 
 
 if __name__ == "__main__":
+
     # wandb.init(project="impl_jiefan")
     main()
