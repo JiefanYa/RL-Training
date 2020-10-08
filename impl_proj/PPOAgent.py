@@ -147,7 +147,7 @@ class Policy(nn.Module):
         raise NotImplementedError
 
     def act(self, inputs, deterministic=False):
-        inputs = self.encoder(inputs)
+        inputs = self.encoder(inputs, rl=True)
         value, actor_features = self.base(inputs)
         dist = self.dist(actor_features)
 
@@ -162,12 +162,12 @@ class Policy(nn.Module):
         return value, action, action_log_probs
 
     def get_value(self, inputs):
-        inputs = self.encoder(inputs)
+        inputs = self.encoder(inputs, rl=True)
         value, _ = self.base(inputs)
         return value
 
     def evaluate_actions(self, inputs, action):
-        inputs = self.encoder(inputs)
+        inputs = self.encoder(inputs, rl=True)
         value, actor_features = self.base(inputs)
         dist = self.dist(actor_features)
 
@@ -220,18 +220,9 @@ class RolloutStorage(object):
         self.value_preds = torch.zeros(num_steps + 1, num_processes, 1)
         self.returns = torch.zeros(num_steps + 1, num_processes, 1)
         self.action_log_probs = torch.zeros(num_steps, num_processes, 1)
-        if action_space.__class__.__name__ == 'Discrete':
-            action_shape = 1
-        else:
-            action_shape = action_space.shape[0]
+        action_shape = action_space.shape[0]
         self.actions = torch.zeros(num_steps, num_processes, action_shape)
-        if action_space.__class__.__name__ == 'Discrete':
-            self.actions = self.actions.long()
         self.masks = torch.ones(num_steps + 1, num_processes, 1)
-
-        # Masks that indicate whether it's a true terminal state
-        # or time limit end state
-        # self.bad_masks = torch.ones(num_steps + 1, num_processes, 1)
 
         self.num_steps = num_steps
         self.step = 0
@@ -244,30 +235,10 @@ class RolloutStorage(object):
         self.action_log_probs = self.action_log_probs.to(device)
         self.actions = self.actions.to(device)
         self.masks = self.masks.to(device)
-        # self.bad_masks = self.bad_masks.to(device)
 
-    # def insert(self, obs, actions, action_log_probs,
-    #            value_preds, rewards, masks, bad_masks=None):
-    #     # convert ndarray to tensor
-    #     obs = torch.from_numpy(obs)
-    #     actions = torch.from_numpy(actions)
-    #     action_log_probs = torch.from_numpy(action_log_probs)
-    #     value_preds = torch.from_numpy(value_preds)
-    #     rewards = torch.from_numpy(rewards)
-    #
-    #     self.obs[self.step + 1].copy_(obs)
-    #     self.actions[self.step].copy_(actions)
-    #     self.action_log_probs[self.step].copy_(action_log_probs)
-    #     self.value_preds[self.step].copy_(value_preds)
-    #     self.rewards[self.step].copy_(rewards)
-    #     self.masks[self.step + 1].copy_(masks)
-    #     # self.bad_masks[self.step + 1].copy_(bad_masks)
-    #
-    #     self.step = (self.step + 1) % self.num_steps
-
-    def insert(self, paths):
-        obs, actions, action_log_probs, value_preds, rewards, masks = unpack_paths_to_rollout_components(paths)
-
+    def insert(self, obs, actions, action_log_probs,
+               value_preds, rewards, masks, bad_masks=None):
+        # convert ndarray to tensor
         obs = torch.from_numpy(obs)
         actions = torch.from_numpy(actions)
         action_log_probs = torch.from_numpy(action_log_probs)
@@ -286,26 +257,8 @@ class RolloutStorage(object):
     def after_update(self):
         self.obs[0].copy_(self.obs[-1])
         self.masks[0].copy_(self.masks[-1])
-        # self.bad_masks[0].copy_(self.bad_masks[-1])
 
-    def compute_returns(self,
-                        next_value,
-                        gamma,
-                        gae_lambda,
-                        use_gae=True,
-                        use_proper_time_limits=False):
-
-        # if use_proper_time_limits:
-        #     self.value_preds[-1] = next_value
-        #     gae = 0
-        #     for step in reversed(range(self.rewards.size(0))):
-        #         delta = self.rewards[step] + gamma * self.value_preds[step + 1] * \
-        #                 self.masks[step + 1] - self.value_preds[step]
-        #         gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
-        #         gae = gae * self.bad_masks[step + 1]
-        #         self.returns[step] = gae + self.value_preds[step]
-        #     return
-
+    def compute_returns(self, next_value, gamma, gae_lambda, use_proper_time_limits=False):
         self.value_preds[-1] = next_value
         gae = 0
         for step in reversed(range(self.rewards.size(0))):
@@ -314,10 +267,8 @@ class RolloutStorage(object):
             gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
             self.returns[step] = gae + self.value_preds[step]
 
-    def feed_forward_generator(self,
-                               advantages,
-                               num_mini_batch=None,
-                               mini_batch_size=None):
+    def feed_forward_generator(self, advantages, num_mini_batch=None, mini_batch_size=None):
+
         num_steps, num_processes = self.rewards.size()[0:2]
         batch_size = num_processes * num_steps
 
@@ -346,6 +297,70 @@ class RolloutStorage(object):
 
             yield obs_batch, actions_batch, value_preds_batch, \
                   return_batch, masks_batch, old_action_log_probs_batch, adv_targ
+
+
+class ReplayBuffer(object):
+
+    def __init__(self, max_size=1000000):
+
+        self.max_size = max_size
+        self.paths = []
+
+        self.obs = None
+        self.rewards = None
+        self.value_preds = None
+        self.actions = None
+        self.action_log_probs = None
+        self.masks = None
+
+        self.returns = None
+
+    def add_rollouts(self, paths):
+
+        for path in paths:
+            self.paths.append(path)
+
+        obs, actions, action_log_probs, value_preds, rewards, masks = unpack_paths_to_rollout_components(paths)
+
+        if self.obs is None:
+            self.obs = obs[-self.max_size:]
+            self.actions = actions[-self.max_size:]
+            self.action_log_probs = action_log_probs[-self.max_size:]
+            self.masks = masks[-self.max_size:]
+            self.rewards = rewards[-self.max_size:]
+            self.value_preds = value_preds[-self.max_size:]
+        else:
+            self.obs = np.concatenate([self.obs, obs])[-self.max_size:]
+            self.actions = np.concatenate([self.actions, actions])[-self.max_size:]
+            self.action_log_probs = np.concatenate([self.action_log_probs, action_log_probs])[-self.max_size:]
+            self.masks = np.concatenate([self.masks, masks])[-self.max_size:]
+            self.rewards = np.concatenate([self.rewards, rewards])[-self.max_size:]
+            self.value_preds = np.concatenate([self.value_preds, value_preds])[-self.max_size:]
+
+    def sample_random_rollouts(self, num):
+        indices = np.random.permutation(len(self.paths))[:num]
+        return self.paths[indices]
+
+    def sample_recent_rollouts(self, num=1):
+        return self.paths[-num:]
+
+    def sample_random_data(self, batch_size):
+        assert self.obs.shape[0] == self.actions.shape[0] == self.action_log_probs.shape[0] \
+               == self.masks.shape[0] == self.rewards.shape[0] == self.value_preds.shape[0]
+
+        indices = np.random.permutation(self.obs.shape[0])[:batch_size]
+        return self.obs[indices], self.actions[indices], self.action_log_probs[indices], \
+               self.value_preds[indices], self.rewards[indices], self.masks[indices]
+
+    def sample_recent_data(self, batch_size=1):
+        return self.obs[-batch_size:], self.actions[-batch_size:], self.action_log_probs[-batch_size:], \
+               self.value_preds[-batch_size:], self.rewards[-batch_size:], self.masks[-batch_size:]
+
+    def compute_returns(self, next_value, gamma, gae_gamma):
+        return
+
+    def __len__(self):
+        return len(self.obs)
 
 
 def get_args():
