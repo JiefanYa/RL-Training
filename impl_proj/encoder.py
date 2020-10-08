@@ -29,14 +29,42 @@ class Encoder(nn.Module):
         self.layers = nn.ModuleList(cnn_layers)
         self.mapping = nn.Linear(128, 64)
 
-    def forward(self, x):
+    def forward(self, x, rl=False):
+        def naive_forward(x):
+            out = x
+            for layer in self.layers:
+                out = layer(out)
+            out = torch.squeeze(out, dim=2)  # use dim (batch can be 1)
+            out = torch.squeeze(out, dim=2)
+            out = self.mapping(out)
+            return out
+
+        if rl:
+            with torch.no_grad():
+                return naive_forward(x)
+        else:
+            return naive_forward(x)
+
+
+class EncoderCNN(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+        # TODO: implement CNN baseline
+
+    def forward(self, x, rl=True):
         out = x
-        for layer in self.layers:
-            out = layer(out)
-        out = torch.squeeze(out, dim=2) # use dim (batch can be 1)
-        out = torch.squeeze(out, dim=2)
-        out = self.mapping(out)
         return out
+
+
+class EncoderOracle(nn.Module):
+
+    def __init__(self):
+        super(EncoderOracle, self).__init__()
+
+    def forward(self, x, rl=True):
+        return x
 
 
 class Decoder(nn.Module):
@@ -91,10 +119,26 @@ class Predictor(nn.Module):
         return lstm_out
 
 
-class EncoderDecoderModel(nn.Module):
+class VAEReconstructionModel(nn.Module):
+
+    def __init__(self):
+        super(VAEReconstructionModel, self).__init__()
+
+        # TODO: implement encoder reconstruction baseline
+        # Note: don't detach between encoder, decoder, only use decoder loss
+
+    def forward(self, x, rl=False):
+        if rl:
+            return x
+
+        out = x
+        return out
+
+
+class VAERewardPredictionModel(nn.Module):
     """complete architecture"""
 
-    def __init__(self, num_reward_heads, train_decoder=False):
+    def __init__(self, num_reward_heads=7, train_decoder=False):
         super().__init__()
 
         self.encoder = Encoder()
@@ -114,7 +158,14 @@ class EncoderDecoderModel(nn.Module):
             reward_heads.append(reward_head)
         self.reward_heads = nn.ModuleList(reward_heads)
 
-    def forward(self, ts):
+    def forward(self, ts, rl=False):
+        if rl:
+            with torch.no_grad():
+                ts_batch, num = batchify(ts)
+                zts_batch = self.encoder(ts_batch)
+                zts = unbatchify(zts_batch, num)
+                return zts
+
         ts_batch, num = batchify(ts)
         zts_batch = self.encoder(ts_batch)
         zts = unbatchify(zts_batch, num)
@@ -236,7 +287,7 @@ def main():
     else:
         train_loader, val_loader, test_loader = loadVAEData(spec, batch_size=batch_size)
 
-    model = EncoderDecoderModel(num_reward_heads, train_decoder)
+    model = VAERewardPredictionModel(num_reward_heads, train_decoder)
 
     if load_model:
         model.load_state_dict(torch.load(model_path))
@@ -261,6 +312,5 @@ def main():
 
 if __name__ == "__main__":
 
-    import os
     wandb.init(project="impl_jiefan")
     main()

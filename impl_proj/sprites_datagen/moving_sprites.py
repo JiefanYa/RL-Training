@@ -222,9 +222,9 @@ if __name__ == '__main__':
 
     from encoder import *
 
-    model_vert = EncoderDecoderModel(1, train_decoder=True)
+    model_vert = VAERewardPredictionModel(1, train_decoder=True)
     model_vert.load_state_dict(torch.load('../models/decoder_vert_09_20.pt'))
-    model_hori = EncoderDecoderModel(1, train_decoder=True)
+    model_hori = VAERewardPredictionModel(1, train_decoder=True)
     model_hori.load_state_dict(torch.load('../models/decoder_hori_09_20.pt'))
 
     with torch.no_grad():

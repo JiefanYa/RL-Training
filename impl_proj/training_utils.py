@@ -203,7 +203,7 @@ def validateEncoderDecoder(model, rewards, train_decoder, loader, device, dtype)
 
 
 '''RL stuff here'''
-def convert_paths_to_components(paths):
+def unpack_paths_to_rollout_components(paths):
     obs = np.concatenate([path['obs'] for path in paths])
     acs = np.concatenate([path['acs'] for path in paths])
     next_obs = np.concatenate([path['next_obs'] for path in paths])
@@ -212,7 +212,7 @@ def convert_paths_to_components(paths):
     return obs, acs, next_obs, terminals, rews
 
 
-def sample_trajectories(env, policy, max_path_length, min_timesteps_per_batch):
+def sample_trajectories(env, policy, min_timesteps_per_batch, max_path_length=None):
     # Question: why using min_timesteps_per_batch (?)
     timesteps_this_batch = 0
     paths = []
@@ -225,7 +225,7 @@ def sample_trajectories(env, policy, max_path_length, min_timesteps_per_batch):
     return paths
 
 
-def sample_trajectory(env, policy, max_path_length):
+def sample_trajectory(env, policy, max_path_length=None):
     ob = env.reset()
     obs, acs, next_obs, terminals, rews = [], [], [], [], []
     steps = 0
@@ -240,7 +240,7 @@ def sample_trajectory(env, policy, max_path_length):
         rews.append(rew)
 
         steps += 1
-        if done or steps > max_path_length:
+        if done or (max_path_length is not None and steps > max_path_length):
             terminals.append(1)
             break
         else:
@@ -252,6 +252,26 @@ def sample_trajectory(env, policy, max_path_length):
             'terminals': np.array(terminals, dtype=np.float32),
             'rews': np.array(rews, dtype=np.float32)}
     return data
+
+
+def init(module, weight_init, bias_init, gain=1):
+    weight_init(module.weight.data, gain=gain)
+    bias_init(module.bias.data)
+    return module
+
+
+class AddBias(nn.Module):
+    def __init__(self, bias):
+        super(AddBias, self).__init__()
+        self._bias = nn.Parameter(bias.unsqueeze(1))
+
+    def forward(self, x):
+        if x.dim() == 2:
+            bias = self._bias.t().view(1, -1)
+        else:
+            bias = self._bias.t().view(1, -1, 1, 1)
+
+        return x + bias
 
 
 '''Driver program to generate encoder dataset'''

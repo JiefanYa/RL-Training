@@ -1,5 +1,5 @@
 # import sprites_env
-from training_utils import MLP
+from training_utils import MLP, init, AddBias
 import gym
 import numpy as np
 import torch
@@ -93,8 +93,39 @@ class PPOAgent(object):
         return advs
 
     def train(self, *args):
-        # call actor update
+        # call actor update TODO
         return
+
+
+class FixedNormal(torch.distributions.Normal):
+    def log_prob(self, actions):
+        return super().log_prob(actions).sum(-1, keepdim=True)
+
+    def entropy(self):
+        return super().entropy().sum(-1)
+
+    def mode(self):
+        return self.mean
+
+
+class DiagGaussian(nn.Module):
+    def __init__(self, num_inputs, num_outputs):
+        super(DiagGaussian, self).__init__()
+
+        init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0))
+
+        self.mean = init_(nn.Linear(num_inputs, num_outputs))
+        self.logstd = AddBias(torch.zeros(num_outputs))
+
+    def forward(self, x):
+        action_mean = self.mean(x)
+
+        zeros = torch.zeros(action_mean.size())
+        if x.is_cuda:
+            zeros = zeros.cuda()
+
+        action_logstd = self.logstd(zeros)
+        return FixedNormal(action_mean, action_logstd.exp())
 
 
 class PPOPolicy(object):
@@ -109,9 +140,7 @@ class PPOPolicy(object):
                  epsilon,
                  value_loss_coeff,
                  entropy_coeff,
-                 training=True,
-                 discrete=True,
-                 nn_baseline=False):
+                 training=True):
 
         # initialize network architecture
 
@@ -120,9 +149,9 @@ class PPOPolicy(object):
         self.epsilon = epsilon
         self.value_loss_coeff = value_loss_coeff
         self.entropy_coeff = entropy_coeff
-        self.discrete = discrete
         self.training = training
-        # self.nn_baseline = nn_baseline
+
+        self.dist = DiagGaussian(ac_dim, ac_dim) # num_inputs, num_outputs
 
         policy_params = {}
         policy_params['input_dim'] = ob_dim
@@ -132,25 +161,23 @@ class PPOPolicy(object):
         self.policy = MLP(policy_params)
         params = list(self.policy.parameters())
 
-        # if self.nn_baseline:
-        #     baseline_params = {}
-        #     baseline_params['input_dim'] = ob_dim
-        #     baseline_params['output_dim'] = 1
-        #     for i in range(n_layers - 1):
-        #         baseline_params['l' + str(i + 1) + '_dim'] = size
-        #     self.baseline = MLP(baseline_params)
-        #     params += list(self.baseline.parameters())
-
         if self.training:
             self.optimizer = optim.Adam(params, lr=self.learning_rate)
 
+    def evaluate_action(self, action):
+        # TODO
+        None
+
     def get_log_prob(self, output, action):
+        assert type(output) == torch.Tensor and type(action) == torch.Tensor, 'output and action must be of type Tensor...'
+
         action = action.to(self.device)
-        if self.discrete:
-            output_probs = nn.functional.log_softmax(output).exp()
-            return torch.distributions.Categorical(output_probs).log_prob(action)
-        else:
-            return torch.distributions.Normal(output[0], output[1]).log_prob(action).sum(-1)
+
+        # if self.discrete:
+        #     output_probs = nn.functional.log_softmax(output).exp()
+        #     return torch.distributions.Categorical(output_probs).log_prob(action)
+        # else:
+        #     return torch.distributions.Normal(output[0], output[1]).log_prob(action).sum(-1)
 
     def update(self, obs, acs, advs, qvals=None):
         # perform backprop
@@ -163,13 +190,6 @@ class PPOPolicy(object):
         policy_loss = torch.sum((-logprob * advs.to(self.device)))
         # TODO: change to PPO objective
         policy_loss.backward()
-
-        # if self.nn_baseline:
-        #     baseline_out = self.baseline(obs.to(self.device))
-        #     baseline_target = torch.Tensor((qvals - qvals.mean()) / (qvals.std() + 1e-8)).to(self.device)
-        #     baseline_criterion = nn.MSELoss()
-        #     baseline_loss = baseline_criterion(baseline_out, baseline_target)
-        #     baseline_loss.backward()
 
         self.optimizer.step()
 
@@ -187,6 +207,7 @@ class PPOPolicy(object):
 
 
 class PPOCritic(object):
+    '''Value function estimator'''
 
     def __init__(self, ob_dim, ac_dim, n_layers, size, device, learning_rate, gamma,
                  num_target_updates, num_grad_steps_per_target_updates):
@@ -248,7 +269,7 @@ class ReplayBuffer(object):
         for path in paths:
             self.paths.append(path)
 
-        obs, acs, next_obs, terminals, rews = convert_paths_to_components(paths)
+        obs, acs, next_obs, terminals, rews = unpack_paths_to_rollout_components(paths)
 
         if self.obs is None:
             self.obs = obs[-self.max_size:]
