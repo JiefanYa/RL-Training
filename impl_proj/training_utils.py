@@ -86,23 +86,22 @@ def loadVAEData(spec,
     return train_loader, val_loader, test_loader
 
 
-def trainEncoderDecoder(model,
-                        rewards,
-                        train_decoder,
-                        optimizer,
-                        scheduler,
-                        loader_train,
-                        loader_val,
-                        model_path,
-                        device,
-                        dtype,
-                        epochs=100,
-                        print_every=15,
-                        save_every=30,
-                        validate_every=10):
+def trainVAERewardPrediction(model,
+                             rewards,
+                             train_decoder,
+                             optimizer,
+                             scheduler,
+                             loader_train,
+                             loader_val,
+                             model_path,
+                             device,
+                             dtype,
+                             epochs=100,
+                             print_every=15,
+                             save_every=30,
+                             validate_every=10):
     """Training function"""
-    print("Training Encoder starts.")
-    print()
+    print("Training VAERewardPrediction model starts.\n")
     model = model.to(device=device)
     criterion = nn.MSELoss()
 
@@ -110,7 +109,8 @@ def trainEncoderDecoder(model,
         for i, sample in enumerate(loader_train):
             model.train()
 
-            ts = [sample['images'][:, index, :, :, :].to(device=device, dtype=dtype) for index in range(10)]
+            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype) for index in
+                  range(10)]
             ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype) for reward in rewards]
 
             if train_decoder:
@@ -130,9 +130,8 @@ def trainEncoderDecoder(model,
             optimizer.step()
 
             if i % print_every == 0:
-                print('Training set: Epoch %d, Iteration %d, model loss = %.4f, encoder loss = %.4f, decoder loss = %.4f'
+                print('Training set: Epoch %d, Iteration %d, model loss = %.4f, encoder loss = %.4f, decoder loss = %.4f\n'
                       % (e, i, loss.item(), loss_encoder.item(), loss_decoder.item() if type(loss_decoder) != int else 0))
-                print()
                 wandb.log({'Training encoder loss': loss_encoder.item(),
                            'Training decoder loss': loss_decoder.item() if type(loss_decoder) != int else 0})
 
@@ -141,21 +140,19 @@ def trainEncoderDecoder(model,
             scheduler.step()
 
         if e % validate_every == 0:
-            validateEncoderDecoder(model, rewards, train_decoder, loader_val, device, dtype)
+            validateVAERewardPrediction(model, rewards, train_decoder, loader_val, device, dtype)
 
         if e % save_every == 0:
             torch.save(model.state_dict(), model_path)
-            print('Model saved to disk on Epoch %d at %s' % (e, datetime.now()))
-            print()
+            print('Model saved to disk on Epoch %d at %s\n' % (e, datetime.now()))
 
     torch.save(model.state_dict(), model_path)
-    print("Training complete. Encoder model saved to disk.")
-    print()
+    print("Training complete. VAERewardPrediction model saved to disk.\n")
 
 
-def validateEncoderDecoder(model, rewards, train_decoder, loader, device, dtype):
+def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, dtype):
     """Validation function"""
-    print('Running validation...')
+    print('Running validation on VAERewardPrediction model...\n')
     criterion = nn.MSELoss()
     model = model.to(device=device)
     model.eval()
@@ -167,7 +164,7 @@ def validateEncoderDecoder(model, rewards, train_decoder, loader, device, dtype)
     with torch.no_grad():
         for i, sample in enumerate(loader):
 
-            ts = [sample['images'][:, index, :, :, :].to(device=device, dtype=dtype) for index in range(10)]
+            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype) for index in range(10)]
             ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype) for reward in rewards]
 
             if train_decoder:
@@ -189,9 +186,8 @@ def validateEncoderDecoder(model, rewards, train_decoder, loader, device, dtype)
             loss_decoder_total += sum(loss_decoder)
             count += 1
 
-    print('Validation set: average encoder loss: %.4f, average decoder loss: %.4f'
+    print('Validation set: average encoder loss: %.4f, average decoder loss: %.4f\n'
           % (loss_encoder_total / count, loss_decoder_total / count))
-    print()
     if train_decoder:
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count,
@@ -200,6 +196,80 @@ def validateEncoderDecoder(model, rewards, train_decoder, loader, device, dtype)
     else:
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count})
+
+
+def trainVAEReconstruction(model,
+                           optimizer,
+                           scheduler,
+                           loader_train,
+                           loader_val,
+                           model_path,
+                           device,
+                           dtype,
+                           epochs=100,
+                           print_every=15,
+                           save_every=30,
+                           validate_every=10):
+    """Training function"""
+    print("Training VAEReconstruction model starts.\n")
+    print()
+    model = model.to(device=device)
+    criterion = nn.MSELoss()
+
+    for e in range(epochs):
+        for i, sample in enumerate(loader_train):
+            model.train()
+
+            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype) for index in
+                  range(10)]
+
+            out = model(ts)
+            losses = [criterion(out[index], ts[index]) for index in range(len(ts))]
+            loss = sum(losses)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if i % print_every == 0:
+                print('Training set: Epoch %d, Iteration %d, model loss = %.4f\n' % (e, i, loss.item()))
+                wandb.log({'Training reconstruction loss': loss.item()})
+
+        if scheduler:
+            scheduler.step()
+
+        if e % validate_every == 0:
+            validateVAEReconstruction(model, loader_val, device, dtype)
+
+        if e % save_every == 0:
+            torch.save(model.state_dict(), model_path)
+            print('Model saved to disk on Epoch %d at %s\n' % (e, datetime.now()))
+
+    torch.save(model.state_dict(), model_path)
+    print('Training complete. VAEReconstruction model saved to disk.\n')
+
+
+def validateVAEReconstruction(model, loader_val, device, dtype):
+    print('Running validation on VAEReconstruction model...\n')
+    criterion = nn.MSELoss()
+    model = model.to(device=device)
+    model.eval()
+    count = 0
+    loss_total = 0
+
+    with torch.no_grad():
+
+        for i, sample in enumerate(loader_val):
+            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype) for index in
+                  range(10)]
+
+            out = model(ts)
+            losses = [criterion(out[index], ts[index]) for index in range(len(ts))]
+            loss_total += sum(losses)
+            count += 1
+
+        print('Validation set: average model loss: %.4f\n' % (loss_total / count))
+        wandb.log({'Reconstruction loss': loss_total / count})
 
 
 '''RL stuff here'''

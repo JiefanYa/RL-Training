@@ -12,7 +12,8 @@ import argparse
 import wandb
 import os
 from encoder import Encoder, EncoderCNN, EncoderOracle, VAEReconstructionModel, VAERewardPredictionModel
-from multiprocessing_env import SubprocVecEnv, VecNormalize
+from multi_threading_env import SubprocVecEnv, VecNormalize
+from datetime import datetime
 
 
 class PPOAgent:
@@ -51,9 +52,9 @@ class PPOAgent:
         dist_entropy_epoch = 0
 
         for e in range(self.ppo_epoch):
-            data_generator = rollouts.feed_forward_generator(advantages, self.num_mini_batch)
+            samples = rollouts.sample_trajectories(advantages, self.num_mini_batch)
 
-            for sample in data_generator:
+            for sample in samples:
                 obs_batch, actions_batch, value_preds_batch, return_batch, \
                 masks_batch, old_action_log_probs_batch, adv_targ = sample
 
@@ -62,8 +63,7 @@ class PPOAgent:
 
                 ratio = torch.exp(action_log_probs - old_action_log_probs_batch)
                 surr1 = ratio * adv_targ
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_param,
-                                    1.0 + self.clip_param) * adv_targ
+                surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv_targ
                 action_loss = -torch.min(surr1, surr2).mean()
 
                 if self.use_clipped_value_loss:
@@ -132,13 +132,19 @@ class Policy(nn.Module):
 
         self.baseline = baseline
         baseline_map = {
-            'cnn': EncoderCNN,
-            'image-scratch': Encoder,
-            'image-reconstruction': VAEReconstructionModel,
-            'reward-prediction': VAERewardPredictionModel,
-            'oracle': EncoderOracle,
+            'cnn': {'class': EncoderCNN, 'model_path': None},
+            'image-scratch': {'class': Encoder, 'model_path': None},
+            'image-reconstruction': {'class': VAEReconstructionModel,
+                                     'model_path': './models/encoder_image_reconstruction_10_08.pt'},
+            'reward-prediction': {'class': VAERewardPredictionModel,
+                                  'model_path': './models/encoder_reward_prediction_10_08.pt'},
+            'oracle': {'class': EncoderOracle, 'model_path': None},
         }
-        self.encoder = baseline_map[baseline]()
+        self.encoder = baseline_map[baseline]['class']()
+
+        if baseline_map[baseline]['model_path'] is not None:
+            self.encoder.load_state_dict(torch.load(baseline_map[baseline]['model_path']))
+
         self.base = base(obs_shape[0])
 
         num_outputs = action_space.shape[0]
@@ -214,7 +220,7 @@ class MLPBase(NNBase):
         return self.critic_linear(hidden_critic), hidden_actor
 
 
-class RolloutStorage(object): # Question: num_steps?
+class RolloutStorage(object):
     def __init__(self, num_steps, num_processes, obs_shape, action_space):
         self.obs = torch.zeros(num_steps + 1, num_processes, *obs_shape)
         self.rewards = torch.zeros(num_steps, num_processes, 1)
@@ -261,7 +267,7 @@ class RolloutStorage(object): # Question: num_steps?
             gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
             self.returns[step] = gae + self.value_preds[step]
 
-    def feed_forward_generator(self, advantages, num_mini_batch=None, mini_batch_size=None):
+    def sample_trajectories(self, advantages, num_mini_batch=None, mini_batch_size=None):
 
         num_steps, num_processes = self.rewards.size()[0:2]
         batch_size = num_processes * num_steps
@@ -300,10 +306,11 @@ def get_args():
         type=float,
         default=7e-4,
         help='learning rate (default: 7e-4)')
-    parser.add_argument('--eps',
-                        type=float,
-                        default=1e-5,
-                        help='RMSprop optimizer epsilon (default: 1e-5)')
+    parser.add_argument(
+        '--eps',
+        type=float,
+        default=1e-5,
+        help='RMSprop optimizer epsilon (default: 1e-5)')
     parser.add_argument(
         '--alpha',
         type=float,
@@ -347,8 +354,8 @@ def get_args():
     parser.add_argument(
         '--num-steps',
         type=int,
-        default=5,
-        help='number of forward steps in A2C (default: 5)')
+        default=2000,
+        help='number of steps of env steps collected in each iteration')
     parser.add_argument(
         '--ppo-epoch',
         type=int,
@@ -390,8 +397,8 @@ def get_args():
     parser.add_argument(
         '--num-env-steps',
         type=int,
-        default=10e6,
-        help='number of environment steps to train (default: 10e6)')
+        default=50e6,
+        help='number of environment steps to train (default: 50e6)')
     parser.add_argument(
         '--env-name',
         default='SpritesState-v0',
@@ -400,6 +407,10 @@ def get_args():
         '--baseline',
         default='oracle',
         help='choose from: cnn, image-scratch, image-reconstruction, reward-prediction, oracle')
+    parser.add_argument(
+        '--load_model',
+        action='store_true',
+        help='load pre-trained actor-critic model')
     args = parser.parse_args()
     return args
 
@@ -407,7 +418,7 @@ def get_args():
 def main():
     args = get_args()
 
-    # wandb.config.update(args)
+    wandb.config.update(args)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # dtype = torch.float32
@@ -419,10 +430,14 @@ def main():
     envs = SubprocVecEnv(envs)
     envs = VecNormalize(envs, gamma=args.gamma)
 
+    model_path = os.path.join(args.save_dir, args.env_name + '_' + args.baseline + '.pt')
     actor_critic = Policy(envs.observation_space.shape, envs.action_space, args.baseline)
-    actor_critic.to(device)
 
-    # wandb.watch(actor_critic)
+    if args.load_model and os.path.exists(model_path):
+        print('Loaded model from %s\n' % model_path)
+        actor_critic.load_state_dict(torch.load(model_path))
+
+    actor_critic.to(device)
 
     agent = PPOAgent(actor_critic,
                      args.clip_param,
@@ -444,13 +459,13 @@ def main():
     episode_reward = torch.zeros(args.num_processes, 1)
     episode_rewards = deque(maxlen=50)
 
-    print('Training starts...')
+    print('Training starts at %s\n' % (datetime.now()))
 
     start = time.time()
     num_updates = int(args.num_env_steps // args.num_steps // args.num_processes)
     for itr in range(num_updates):
         for step in range(args.num_steps):
-            # Sample actions
+            # collect trajectories by running actor_critic
             with torch.no_grad():
                 values, actions, action_log_probs = actor_critic.act(rollouts.obs[step])
 
@@ -461,21 +476,13 @@ def main():
             masks = torch.FloatTensor([[0.0] if done else [1.0] for done in dones])
             rollouts.insert(obs, actions, action_log_probs, values, rewards, masks)
 
-            # Notes: episode - till done is 1, episode reward - sum of rewards till done is 1
-            # Notes: reset environment when done
+            # Notes: reset environment when done is handled in worker in multi_threading_env.py
 
             episode_reward += rewards
-            episode_reward *= masks
             finished_episode_rewards = ((1 - masks) * episode_reward).squeeze()
             finished_episode_rewards = finished_episode_rewards[finished_episode_rewards > 0]
             episode_rewards.extend(finished_episode_rewards)
-
-        # if itr == 0:
-        #     use_batch_size = args.batch_size_initial
-        # else:
-        #     use_batch_size = args.batch_size
-        # paths = sample_trajectories(env, actor_critic, use_batch_size)
-        # rollouts.insert(paths)
+            episode_reward *= masks
 
         with torch.no_grad():
             next_value = actor_critic.get_value(rollouts.obs[-1]).detach()
@@ -486,40 +493,41 @@ def main():
 
         rollouts.after_update()
 
+        total_num_steps = (itr + 1) * args.num_processes * args.num_steps
+
         if (itr % args.save_interval == 0 or itr == num_updates - 1) and args.save_dir != "":
-            torch.save(actor_critic.state_dict(), os.path.join(args.save_dir, args.env_name + '.pt'))
+            torch.save(actor_critic.state_dict(), model_path)
+            print('Actor critic saved to disk at itr %d , num timesteps %d , at %s\n'
+                  % (itr, total_num_steps, datetime.now()))
 
         if itr % args.log_interval == 0 and len(episode_rewards) > 1:
-            total_num_steps = (itr + 1) * args.num_processes * args.num_steps
             end = time.time()
 
-            print('Updates %d, num timesteps %d, FPS %d\n'
+            mean_reward = np.mean(episode_rewards)
+            median_reward = np.median(episode_rewards)
+            min_reward = np.min(episode_rewards)
+            max_reward = np.max(episode_rewards)
+
+            print('Iteration %d, num timesteps %d, FPS %d, at %s\n'
                   'Last %d training episodes: mean reward %.4f, median reward %.4f, '
                   'min reward %.4f, max reward %.4f, value_loss %.4f, action_loss %.4f, dist_entropy %.4f\n' %
-                  (itr, total_num_steps, int(total_num_steps / (end - start)), len(episode_rewards),
-                   np.mean(episode_rewards), np.median(episode_rewards), np.min(episode_rewards),
-                   np.max(episode_rewards), value_loss, action_loss, dist_entropy))
+                  (itr, total_num_steps, int(total_num_steps / (end - start)), datetime.now(),
+                   len(episode_rewards), mean_reward,  median_reward, min_reward,
+                   max_reward, value_loss, action_loss, dist_entropy))
 
-            # wandb.log({'Total timesteps': total_num_steps,
-            #            'Mean reward': np.mean(episode_rewards),
-            #            'Median reward': np.median(episode_rewards),
-            #            'Min reward': np.min(episode_rewards),
-            #            'Max reward': np.max(episode_rewards)})
-
-        elif itr % args.log_interval == 0:
-            total_num_steps = (itr + 1) * args.num_processes * args.num_steps
-            end = time.time()
-
-            print('Updates %d, num timesteps %d, FPS %d\n'
-                  'value_loss %.4f, action_loss %.4f, dist_entropy %.4f\n' %
-                  (itr, total_num_steps, int(total_num_steps / (end - start)),
-                   value_loss, action_loss, dist_entropy))
+            wandb.log({'Total timesteps': total_num_steps,
+                       'Mean reward': mean_reward,
+                       'Median reward': median_reward,
+                       'Min reward': min_reward,
+                       'Max reward': max_reward})
 
         if args.eval_interval is not None and itr % args.eval_interval == 0 and len(episode_rewards) > 1:
             pass
 
+    print('Training stops at %s\n' % (datetime.now()))
+
 
 if __name__ == "__main__":
 
-    # wandb.init(project="impl_jiefan")
+    wandb.init(project="impl_jiefan")
     main()

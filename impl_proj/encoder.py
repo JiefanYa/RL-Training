@@ -1,11 +1,12 @@
 from sprites_datagen.rewards import *
-from training_utils import loadVAEData, trainEncoderDecoder, MLP
+from training_utils import loadVAEData, trainVAERewardPrediction, trainVAEReconstruction, MLP
 from general_utils import AttrDict
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import wandb
+import argparse
 
 
 class Encoder(nn.Module):
@@ -65,7 +66,8 @@ class EncoderOracle(nn.Module):
         super(EncoderOracle, self).__init__()
 
     def forward(self, x, rl=True):
-        return x
+        with torch.no_grad():
+            return x
 
 
 class Decoder(nn.Module):
@@ -80,9 +82,9 @@ class Decoder(nn.Module):
 
         cnn_layers = []
         for i in range(self.num_layers):
-            cnn_layers.append(nn.ConvTranspose2d(num_channels, num_channels // 2 if i != self.num_layers - 1 else 3,
+            cnn_layers.append(nn.ConvTranspose2d(num_channels, num_channels // 2 if i != self.num_layers - 1 else 1,
                                                  kernel_size=4, stride=2, padding=1))
-            cnn_layers.append(nn.BatchNorm2d(num_channels // 2 if i != self.num_layers - 1 else 3))
+            cnn_layers.append(nn.BatchNorm2d(num_channels // 2 if i != self.num_layers - 1 else 1))
             cnn_layers.append(nn.LeakyReLU())
             if i != self.num_layers - 1:
                 num_channels //= 2
@@ -128,12 +130,23 @@ class VAEReconstructionModel(nn.Module):
         # TODO: implement encoder reconstruction baseline
         # Note: don't detach between encoder, decoder, only use decoder loss
 
-    def forward(self, x, rl=False):
-        if rl:
-            return x
+        self.encoder = Encoder()
+        self.decoder = Decoder()
 
-        out = x
-        return out
+    def forward(self, ts, rl=False):
+
+        def naive_forward(ts):
+            ts_batch, num = batchify(ts)
+            zts_batch = self.encoder(ts_batch)
+            zts_decode_batch = self.decoder(zts_batch)
+            zts_decode = unbatchify(zts_decode_batch, num)
+            return zts_decode
+
+        if rl:
+            with torch.no_grad():
+                return naive_forward(ts)
+        else:
+            return naive_forward(ts)
 
 
 class VAERewardPredictionModel(nn.Module):
@@ -217,8 +230,8 @@ def unbatchify(input, num, toTensor=False):
         return list(out)
 
 
-def main():
-    import argparse
+def get_args():
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--resolution', type=int, default=64)
     parser.add_argument('--max_seq_len', type=int, default=30)
@@ -239,25 +252,16 @@ def main():
     parser.add_argument('--step_size', '-ss', type=int, default=30)
     parser.add_argument('--weight_decay', type=float, default=1e-3)
     parser.add_argument('--epochs', '-e', type=int, default=150)
+    parser.add_argument('--reconstruction', '-recon', action='store_true')
     args = parser.parse_args()
-    params = vars(args)
 
-    wandb.config.update(args)
+    return args
 
-    num_reward_heads = params['num_reward_heads']
-    reward_indices = params['reward_indices']
-    model_path = params['model_path']
-    load_model = params['load_model']
-    train_decoder = params['train_decoder']
-    save_to_disk = params['save_to_disk']
-    data_path = params['data_path']
-    batch_size = params['batch_size']
-    lr = params['learning_rate']
-    use_scheduler = params['use_scheduler']
-    gamma = params['gamma']
-    step_size = params['step_size']
-    weight_decay = params['weight_decay']
-    epochs = params['epochs']
+
+def main():
+    args = get_args()
+
+    # wandb.config.update(args)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dtype = torch.float32
@@ -268,51 +272,64 @@ def main():
         'rewards_name':
             ['zero', 'vertical_position', 'horizontal_position', 'agent_x', 'agent_y', 'target_x', 'target_y']
     }
-    reward_classes = np.array(rewards['rewards_class'])[reward_indices]
-    reward_names = np.array(rewards['rewards_name'])[reward_indices]
+    reward_classes = np.array(rewards['rewards_class'])[args.reward_indices] \
+        if args.reward_indices else np.array(rewards['rewards_class'])
+    reward_names = np.array(rewards['rewards_name'])[args.reward_indices] \
+        if args.reward_indices else None
 
     spec = AttrDict(
-        resolution=params['resolution'],
-        max_seq_len=params['max_seq_len'],
-        max_speed=params['max_speed'],
-        obj_size=params['obj_size'],
-        shapes_per_traj=params['shapes_per_traj'],
+        resolution=args.resolution,
+        max_seq_len=args.max_seq_len,
+        max_speed=args.max_speed,
+        obj_size=args.obj_size,
+        shapes_per_traj=args.shapes_per_traj,
         rewards=reward_classes
     )
 
-    if save_to_disk:
-        train_loader, val_loader, test_loader = loadVAEData(spec,
-                                                            save_to_disk=True,
-                                                            path=data_path,
-                                                            decoder=train_decoder,
-                                                            batch_size=batch_size)
+    train_loader, val_loader, test_loader = loadVAEData(spec, batch_size=args.batch_size)
+
+    if args.reconstruction:
+        model = VAEReconstructionModel()
     else:
-        train_loader, val_loader, test_loader = loadVAEData(spec, batch_size=batch_size)
+        model = VAERewardPredictionModel(args.num_reward_heads, args.train_decoder)
 
-    model = VAERewardPredictionModel(num_reward_heads, train_decoder)
+    if args.load_model:
+        model.load_state_dict(torch.load(args.model_path))
+        if args.reconstruction:
+            print('VAEReconstruction model loaded\n')
+        else:
+            print('VAERewardPrediction model loaded\n')
 
-    if load_model:
-        model.load_state_dict(torch.load(model_path))
-        print('EncoderDecoder model loaded')
+    # wandb.watch(model)
 
-    wandb.watch(model)
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, args.step_size, args.gamma) if args.use_scheduler else None
 
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size, gamma) if use_scheduler else None
-    trainEncoderDecoder(model,
-                        reward_names,
-                        train_decoder,
-                        optimizer,
-                        scheduler,
-                        train_loader,
-                        val_loader,
-                        model_path,
-                        device,
-                        dtype,
-                        epochs=epochs)
+    if args.reconstruction:
+        trainVAEReconstruction(model,
+                               optimizer,
+                               scheduler,
+                               train_loader,
+                               val_loader,
+                               args.model_path,
+                               device,
+                               dtype,
+                               epochs=args.epochs)
+    else:
+        trainVAERewardPrediction(model,
+                                 reward_names,
+                                 args.train_decoder,
+                                 optimizer,
+                                 scheduler,
+                                 train_loader,
+                                 val_loader,
+                                 args.model_path,
+                                 device,
+                                 dtype,
+                                 epochs=args.epochs)
 
 
 if __name__ == "__main__":
 
-    wandb.init(project="impl_jiefan")
+    # wandb.init(project="impl_jiefan")
     main()
