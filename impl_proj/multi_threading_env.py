@@ -4,7 +4,6 @@
 import numpy as np
 from multiprocessing import Process, Pipe
 
-import numpy as np
 class RunningMeanStd(object):
     # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
     def __init__(self, epsilon=1e-4, shape=()):
@@ -59,6 +58,7 @@ def worker(remote, parent_remote, env_fn_wrapper):
         else:
             raise NotImplementedError
 
+
 class VecEnv(object):
     """
     An abstract asynchronous, vectorized environment.
@@ -110,6 +110,7 @@ class VecEnv(object):
         self.step_async(actions)
         return self.step_wait()
 
+
 class VecEnvWrapper(VecEnv):
     def __init__(self, venv, observation_space=None, action_space=None):
         self.venv = venv
@@ -146,6 +147,7 @@ class CloudpickleWrapper(object):
     def __setstate__(self, ob):
         import pickle
         self.x = pickle.loads(ob)
+
 
 class SubprocVecEnv(VecEnv):
     def __init__(self, env_fns, spaces=None):
@@ -231,14 +233,15 @@ class VecNormalize(VecEnvWrapper):
         obs = self._obfilt(obs)
         if self.ret_rms:
             self.ret_rms.update(self.ret)
-            rews_norm = rews / np.sqrt(self.ret_rms.var + self.epsilon)
+            rews_norm = rews / np.sqrt(self.ret_rms.var + self.epsilon) # Question: wtf?
             rews = np.clip(rews_norm, -self.cliprew, self.cliprew)
         return obs, rews, news, infos
 
     def _obfilt(self, obs):
         if self.ob_rms:
             self.ob_rms.update(obs)
-            obs = np.clip((obs - self.ob_rms.mean) / np.sqrt(self.ob_rms.var + self.epsilon), -self.clipob, self.clipob)
+            obs_norm = (obs - self.ob_rms.mean) / np.sqrt(self.ob_rms.var + self.epsilon)
+            obs = np.clip(obs_norm, -self.clipob, self.clipob)
             return obs
         else:
             return obs
@@ -250,10 +253,6 @@ class VecNormalize(VecEnvWrapper):
         obs = self.venv.reset()
         return self._obfilt(obs)
 
-
-from gym import spaces
-from collections import OrderedDict
-import numpy as np
 
 class DummyVecEnv(VecEnv):
     def __init__(self, env_fns):
@@ -313,5 +312,3 @@ class DummyVecEnv(VecEnv):
             return self.buf_obs[None]
         else:
             return self.buf_obs
-
-
