@@ -210,7 +210,7 @@ class VecNormalize(VecEnvWrapper):
     """
     Vectorized environment base class
     """
-    def __init__(self, venv, ob=True, ret=True, clipob=10., cliprew=10., gamma=0.99, epsilon=1e-8):
+    def __init__(self, venv, ob=False, ret=False, clipob=10., cliprew=10., gamma=0.99, epsilon=1e-8):
         VecEnvWrapper.__init__(self, venv)
         self.ob_rms = RunningMeanStd(shape=self.observation_space.shape) if ob else None
         self.ret_rms = RunningMeanStd(shape=()) if ret else None
@@ -231,7 +231,8 @@ class VecNormalize(VecEnvWrapper):
         obs = self._obfilt(obs)
         if self.ret_rms:
             self.ret_rms.update(self.ret)
-            rews = np.clip(rews / np.sqrt(self.ret_rms.var + self.epsilon), -self.cliprew, self.cliprew)
+            rews_norm = rews / np.sqrt(self.ret_rms.var + self.epsilon)
+            rews = np.clip(rews_norm, -self.cliprew, self.cliprew)
         return obs, rews, news, infos
 
     def _obfilt(self, obs):

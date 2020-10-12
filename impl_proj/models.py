@@ -42,7 +42,7 @@ class Encoder(nn.Module):
 
         if rl:
             with torch.no_grad():
-                x = torch.unsqueeze(x, dim=0) # insert 1 channel dim
+                x = torch.unsqueeze(x, dim=1) # insert 1 channel dim
                 return naive_forward(x)
         else:
             return naive_forward(x)
@@ -53,11 +53,25 @@ class EncoderCNN(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # TODO: implement CNN baseline
+        cnn_layers = [nn.Conv2d(1,16,kernel_size=3,stride=2), nn.ReLU(),
+                      nn.Conv2d(16,16,kernel_size=3,stride=2), nn.ReLU(),
+                      nn.Conv2d(16,16,kernel_size=3,stride=2), nn.ReLU()]
+        self.layers = nn.ModuleList(cnn_layers)
 
     def forward(self, x, rl=True):
-        out = x
-        return out
+        def naive_forward(x):
+            out = x
+            for layer in self.layers:
+                out = layer(out)
+            out = torch.reshape(out, (out.shape[0],-1)) # flatten
+            return out
+
+        if rl:
+            with torch.no_grad(): # Question: do we finetune i.e. train the cnn?
+                x = torch.unsqueeze(x, dim=1) # insert 1 channel dim
+                return naive_forward(x)
+        else:
+            return naive_forward(x)
 
 
 class EncoderOracle(nn.Module):
@@ -127,7 +141,6 @@ class VAEReconstructionModel(nn.Module):
     def __init__(self):
         super(VAEReconstructionModel, self).__init__()
 
-        # TODO: implement encoder reconstruction baseline
         # Note: don't detach between encoder, decoder, only use decoder loss
 
         self.encoder = Encoder()
@@ -137,8 +150,8 @@ class VAEReconstructionModel(nn.Module):
 
         def naive_forward(ts):
             ts_batch, num = batchify(ts)
-            zts_batch = self.encoder(ts_batch)
-            zts_decode_batch = self.decoder(zts_batch)
+            zts_batch = self.encoder(ts_batch, rl)
+            zts_decode_batch = self.decoder(zts_batch, rl)
             zts_decode = unbatchify(zts_decode_batch, num)
             return zts_decode
 
@@ -231,7 +244,6 @@ def unbatchify(input, num, toTensor=False):
 
 
 def get_args():
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--resolution', type=int, default=64)
     parser.add_argument('--max_seq_len', type=int, default=30)
@@ -239,7 +251,6 @@ def get_args():
     parser.add_argument('--obj_size', type=float, default=0.2)
     parser.add_argument('--shapes_per_traj', '-spt', type=int, default=3)
     parser.add_argument('--reward_indices', '-r', type=int, nargs='*')
-    parser.add_argument('--num_reward_heads', '-nr', type=int, default=7)
     parser.add_argument('--model_path', '-mp', type=str)
     parser.add_argument('--load_model', '-lm', action='store_true')
     parser.add_argument('--train_decoder', '-td', action='store_true')
@@ -247,10 +258,6 @@ def get_args():
     parser.add_argument('--data_path', '-dp', type=str)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--learning_rate', '-lr', type=float, default=1e-3)
-    parser.add_argument('--use_scheduler', '-us', action='store_true')
-    parser.add_argument('--gamma', '-g', type=float, default=0.9)
-    parser.add_argument('--step_size', '-ss', type=int, default=30)
-    parser.add_argument('--weight_decay', type=float, default=1e-3)
     parser.add_argument('--epochs', '-e', type=int, default=150)
     parser.add_argument('--reconstruction', '-recon', action='store_true')
     args = parser.parse_args()
@@ -258,10 +265,8 @@ def get_args():
     return args
 
 
-def main():
+def main(DEBUG=False):
     args = get_args()
-
-    # wandb.config.update(args)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dtype = torch.float32
@@ -272,10 +277,12 @@ def main():
         'rewards_name':
             ['zero', 'vertical_position', 'horizontal_position', 'agent_x', 'agent_y', 'target_x', 'target_y']
     }
+
     reward_classes = np.array(rewards['rewards_class'])[args.reward_indices] \
         if args.reward_indices else np.array(rewards['rewards_class'])
     reward_names = np.array(rewards['rewards_name'])[args.reward_indices] \
         if args.reward_indices else None
+    num_reward_heads = len(args.reward_indices) if args.reward_indices else None
 
     spec = AttrDict(
         resolution=args.resolution,
@@ -291,7 +298,7 @@ def main():
     if args.reconstruction:
         model = VAEReconstructionModel()
     else:
-        model = VAERewardPredictionModel(args.num_reward_heads, args.train_decoder)
+        model = VAERewardPredictionModel(num_reward_heads, args.train_decoder)
 
     if args.load_model:
         model.load_state_dict(torch.load(args.model_path))
@@ -300,15 +307,16 @@ def main():
         else:
             print('VAERewardPrediction model loaded\n')
 
-    # wandb.watch(model)
+    if not DEBUG:
+        wandb.init(project="impl_jiefan")
+        wandb.config.update(args)
+        wandb.watch(model)
 
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, args.step_size, args.gamma) if args.use_scheduler else None
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 
     if args.reconstruction:
         trainVAEReconstruction(model,
                                optimizer,
-                               scheduler,
                                train_loader,
                                val_loader,
                                args.model_path,
@@ -320,7 +328,6 @@ def main():
                                  reward_names,
                                  args.train_decoder,
                                  optimizer,
-                                 scheduler,
                                  train_loader,
                                  val_loader,
                                  args.model_path,
@@ -331,5 +338,5 @@ def main():
 
 if __name__ == "__main__":
 
-    # wandb.init(project="impl_jiefan")
-    main()
+    DEBUG=False
+    main(DEBUG=DEBUG)

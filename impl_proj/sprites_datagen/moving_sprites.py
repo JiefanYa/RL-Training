@@ -220,22 +220,22 @@ if __name__ == '__main__':
     img = make_image_seq_strip([traj.images[None, :, None].repeat(3, axis=2).astype(np.float32)], sep_val=255.0).astype(np.uint8)
     cv2.imwrite("original.png", img[0].transpose(1, 2, 0))
 
-    from encoder import *
-
-    model_vert = VAERewardPredictionModel(1, train_decoder=True)
-    model_vert.load_state_dict(torch.load('../models/decoder_vert_09_20.pt'))
-    model_hori = VAERewardPredictionModel(1, train_decoder=True)
-    model_hori.load_state_dict(torch.load('../models/decoder_hori_09_20.pt'))
-
-    with torch.no_grad():
-        input = traj.images[None, :, None].repeat(3, axis=2).astype(np.float32)[0]
-        input = [torch.from_numpy(input)]
-        _, out_vert = model_vert(input)[0].numpy()
-        _, out_hori = model_hori(input)[0].numpy()
-        out_vert = np.expand_dims(out_vert, axis=0)
-        out_hori = np.expand_dims(out_hori, axis=0)
-        img_vert = make_image_seq_strip([out_vert], sep_val=255.0).astype(np.uint8)
-        cv2.imwrite("vertical.png", img_vert[0].transpose(1, 2, 0))
-        img_hori = make_image_seq_strip([out_hori], sep_val=255.0).astype(np.uint8)
-        cv2.imwrite("horizontal.png", img_hori[0].transpose(1, 2, 0))
+    # from models import *
+    #
+    # model_vert = VAERewardPredictionModel(1, train_decoder=True)
+    # model_vert.load_state_dict(torch.load('../models/decoder_vert_09_20.pt'))
+    # model_hori = VAERewardPredictionModel(1, train_decoder=True)
+    # model_hori.load_state_dict(torch.load('../models/decoder_hori_09_20.pt'))
+    #
+    # with torch.no_grad():
+    #     input = traj.images[None, :, None].repeat(3, axis=2).astype(np.float32)[0]
+    #     input = [torch.from_numpy(input)]
+    #     _, out_vert = model_vert(input)[0].numpy()
+    #     _, out_hori = model_hori(input)[0].numpy()
+    #     out_vert = np.expand_dims(out_vert, axis=0)
+    #     out_hori = np.expand_dims(out_hori, axis=0)
+    #     img_vert = make_image_seq_strip([out_vert], sep_val=255.0).astype(np.uint8)
+    #     cv2.imwrite("vertical.png", img_vert[0].transpose(1, 2, 0))
+    #     img_hori = make_image_seq_strip([out_hori], sep_val=255.0).astype(np.uint8)
+    #     cv2.imwrite("horizontal.png", img_hori[0].transpose(1, 2, 0))
 

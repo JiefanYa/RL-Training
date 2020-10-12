@@ -11,7 +11,7 @@ import time
 import argparse
 import wandb
 import os
-from encoder import Encoder, EncoderCNN, EncoderOracle, VAEReconstructionModel, VAERewardPredictionModel
+from models import Encoder, EncoderCNN, EncoderOracle, VAEReconstructionModel, VAERewardPredictionModel
 from multi_threading_env import SubprocVecEnv, VecNormalize
 from datetime import datetime
 
@@ -126,26 +126,31 @@ class DiagGaussian(nn.Module):
 
 
 class Policy(nn.Module):
-    def __init__(self, obs_shape, action_space, baseline):
+    def __init__(self, obs_shape, action_space, baseline, env_name, model_dir):
         super(Policy, self).__init__()
         base = MLPBase
 
-        self.baseline = baseline
+        v = env_name.split('-')[1]
         baseline_map = {
             'cnn': {'class': EncoderCNN, 'model_path': None},
             'image-scratch': {'class': Encoder, 'model_path': None},
             'image-reconstruction': {'class': VAEReconstructionModel,
-                                     'model_path': './models/encoder_image_reconstruction_10_08.pt'},
+                                     'model_path': model_dir+'encoder_reconstruction_'+v+'.pt'},
             'reward-prediction': {'class': VAERewardPredictionModel,
-                                  'model_path': './models/encoder_reward_prediction_10_08.pt'},
+                                  'model_path': model_dir+'encoder_reward_prediction_'+v+'.pt'},
             'oracle': {'class': EncoderOracle, 'model_path': None},
         }
+
+        self.baseline = baseline
         self.encoder = baseline_map[baseline]['class']()
 
         if baseline_map[baseline]['model_path'] is not None:
             self.encoder.load_state_dict(torch.load(baseline_map[baseline]['model_path']))
 
-        self.base = base(obs_shape[0])
+        if baseline == 'cnn': # use flattened activation (hard-coded)
+            self.base = base(784)
+        else: # use embedding/obs directly
+            self.base = base(obs_shape[0])
 
         num_outputs = action_space.shape[0]
         self.dist = DiagGaussian(self.base.output_size, num_outputs)
@@ -397,8 +402,8 @@ def get_args():
     parser.add_argument(
         '--num-env-steps',
         type=int,
-        default=50e6,
-        help='number of environment steps to train (default: 50e6)')
+        default=5e6,
+        help='number of environment steps to train (default: 20e6)')
     parser.add_argument(
         '--env-name',
         default='SpritesState-v0',
@@ -415,13 +420,14 @@ def get_args():
     return args
 
 
-def main():
+def main_multi_thread(DEBUG=False):
     args = get_args()
 
-    wandb.config.update(args)
+    if not DEBUG:
+        wandb.init(project="impl_jiefan")
+        wandb.config.update(args)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # dtype = torch.float32
 
     def make_env():
         return gym.make(args.env_name)
@@ -431,7 +437,12 @@ def main():
     envs = VecNormalize(envs, gamma=args.gamma)
 
     model_path = os.path.join(args.save_dir, args.env_name + '_' + args.baseline + '.pt')
-    actor_critic = Policy(envs.observation_space.shape, envs.action_space, args.baseline)
+
+    actor_critic = Policy(envs.observation_space.shape,
+                          envs.action_space,
+                          args.baseline,
+                          args.env_name,
+                          args.save_dir)
 
     if args.load_model and os.path.exists(model_path):
         print('Loaded model from %s\n' % model_path)
@@ -495,7 +506,7 @@ def main():
 
         total_num_steps = (itr + 1) * args.num_processes * args.num_steps
 
-        if (itr % args.save_interval == 0 or itr == num_updates - 1) and args.save_dir != "":
+        if (itr % args.save_interval == 0 or itr == num_updates - 1) and args.save_dir != "" and not DEBUG:
             torch.save(actor_critic.state_dict(), model_path)
             print('Actor critic saved to disk at itr %d , num timesteps %d , at %s\n'
                   % (itr, total_num_steps, datetime.now()))
@@ -515,11 +526,128 @@ def main():
                    len(episode_rewards), mean_reward,  median_reward, min_reward,
                    max_reward, value_loss, action_loss, dist_entropy))
 
-            wandb.log({'Total timesteps': total_num_steps,
-                       'Mean reward': mean_reward,
-                       'Median reward': median_reward,
-                       'Min reward': min_reward,
-                       'Max reward': max_reward})
+            if not DEBUG:
+                wandb.log({'Total timesteps': total_num_steps,
+                           'Mean reward': mean_reward,
+                           'Median reward': median_reward,
+                           'Min reward': min_reward,
+                           'Max reward': max_reward})
+
+        if args.eval_interval is not None and itr % args.eval_interval == 0 and len(episode_rewards) > 1:
+            pass
+
+    print('Training stops at %s\n' % (datetime.now()))
+
+
+def main_single_thread(DEBUG=False):
+    args = get_args()
+
+    if not DEBUG:
+        wandb.init(project="impl_jiefan")
+        wandb.config.update(args)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    env = gym.make(args.env_name)
+
+    model_path = os.path.join(args.save_dir, args.env_name + '_' + args.baseline + '.pt')
+
+    actor_critic = Policy(env.observation_space.shape,
+                          env.action_space,
+                          args.baseline,
+                          args.env_name,
+                          args.save_dir)
+
+    if args.load_model and os.path.exists(model_path):
+        print('Loaded model from %s\n' % model_path)
+        actor_critic.load_state_dict(torch.load(model_path))
+
+    actor_critic.to(device)
+
+    agent = PPOAgent(actor_critic,
+                     args.clip_param,
+                     args.ppo_epoch,
+                     args.num_mini_batch,
+                     args.value_loss_coef,
+                     args.entropy_coef,
+                     lr=args.lr,
+                     eps=args.eps,
+                     max_grad_norm=args.max_grad_norm)
+
+    rollouts = RolloutStorage(args.num_steps, 1,
+                              env.observation_space.shape, env.action_space)
+
+    ob = env.reset()
+    rollouts.obs[0].copy_(torch.from_numpy(ob))
+    rollouts.to(device)
+
+    episode_reward = torch.zeros(1)
+    episode_rewards = deque(maxlen=200)
+
+    print('Training starts at %s\n' % (datetime.now()))
+
+    start = time.time()
+    num_updates = int(args.num_env_steps // args.num_steps)
+
+    for itr in range(num_updates):
+        for step in range(args.num_steps):
+            # collect trajectories by running actor_critic
+            with torch.no_grad():
+                value, action, action_log_prob = actor_critic.act(rollouts.obs[step])
+
+            ob, reward, done, _ = env.step(action.squeeze(1).cpu().numpy())
+
+            if done:
+                ob = env.reset()
+
+            ob = torch.from_numpy(ob).float()
+            reward = torch.FloatTensor([reward])
+            mask = torch.FloatTensor([0.0] if done else [1.0])
+            rollouts.insert(ob, action, action_log_prob, value, reward, mask)
+
+            episode_reward += reward
+
+            if done:
+                episode_rewards.append(episode_reward.item())
+                episode_reward *= mask
+
+        with torch.no_grad():
+            next_value = actor_critic.get_value(rollouts.obs[-1]).detach()
+
+        rollouts.compute_returns(next_value, args.gamma, args.gae_lambda)
+
+        value_loss, action_loss, dist_entropy = agent.update(rollouts)
+
+        rollouts.after_update()
+
+        total_num_steps = (itr + 1) * args.num_steps
+
+        if (itr % args.save_interval == 0 or itr == num_updates - 1) and args.save_dir != "" and not DEBUG:
+            torch.save(actor_critic.state_dict(), model_path)
+            print('Actor critic saved to disk at itr %d , num timesteps %d , at %s\n'
+                  % (itr, total_num_steps, datetime.now()))
+
+        if itr % args.log_interval == 0 and len(episode_rewards) > 1:
+            end = time.time()
+
+            mean_reward = np.mean(episode_rewards)
+            median_reward = np.median(episode_rewards)
+            min_reward = np.min(episode_rewards)
+            max_reward = np.max(episode_rewards)
+
+            print('Iteration %d, num timesteps %d, FPS %d, at %s\n'
+                  'Last %d training episodes: mean reward %.4f, median reward %.4f, '
+                  'min reward %.4f, max reward %.4f, value_loss %.4f, action_loss %.4f, dist_entropy %.4f\n' %
+                  (itr, total_num_steps, int(total_num_steps / (end - start)), datetime.now(),
+                   len(episode_rewards), mean_reward, median_reward, min_reward,
+                   max_reward, value_loss, action_loss, dist_entropy))
+
+            if not DEBUG:
+                wandb.log({'Total timesteps': total_num_steps,
+                           'Mean reward': mean_reward,
+                           'Median reward': median_reward,
+                           'Min reward': min_reward,
+                           'Max reward': max_reward})
 
         if args.eval_interval is not None and itr % args.eval_interval == 0 and len(episode_rewards) > 1:
             pass
@@ -529,5 +657,5 @@ def main():
 
 if __name__ == "__main__":
 
-    wandb.init(project="impl_jiefan")
-    main()
+    DEBUG = False
+    main_multi_thread(DEBUG=DEBUG)

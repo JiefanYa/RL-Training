@@ -90,7 +90,6 @@ def trainVAERewardPrediction(model,
                              rewards,
                              train_decoder,
                              optimizer,
-                             scheduler,
                              loader_train,
                              loader_val,
                              model_path,
@@ -135,10 +134,6 @@ def trainVAERewardPrediction(model,
                 wandb.log({'Training encoder loss': loss_encoder.item(),
                            'Training decoder loss': loss_decoder.item() if type(loss_decoder) != int else 0})
 
-        if scheduler:
-            # print('Performing scheduler step...')
-            scheduler.step()
-
         if e % validate_every == 0:
             validateVAERewardPrediction(model, rewards, train_decoder, loader_val, device, dtype)
 
@@ -171,7 +166,7 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
                 out, images = model(ts)
                 loss_decoder = [criterion(images[index], ts[index]) for index in range(len(images))]
                 if not log_image:
-                    index = np.random.randint(ts[0].size(0))
+                    index = np.random.randint(ts[0].size(0)) # TODO: log one image to wandb
                     originals = [t[index,:,:,:].cpu().numpy() for t in ts]
                     originals = [wandb.Image(np.moveaxis(x, 0, 2), caption='Ground Truth') for x in originals]
                     predictions = [image[index,:,:,:].cpu().numpy() for image in images]
@@ -200,7 +195,6 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
 
 def trainVAEReconstruction(model,
                            optimizer,
-                           scheduler,
                            loader_train,
                            loader_val,
                            model_path,
@@ -234,9 +228,6 @@ def trainVAEReconstruction(model,
             if i % print_every == 0:
                 print('Training set: Epoch %d, Iteration %d, model loss = %.4f\n' % (e, i, loss.item()))
                 wandb.log({'Training reconstruction loss': loss.item()})
-
-        if scheduler:
-            scheduler.step()
 
         if e % validate_every == 0:
             validateVAEReconstruction(model, loader_val, device, dtype)
