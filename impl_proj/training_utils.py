@@ -98,7 +98,8 @@ def trainVAERewardPrediction(model,
                              epochs=100,
                              print_every=15,
                              save_every=30,
-                             validate_every=10):
+                             validate_every=10,
+                             DEBUG=False):
     """Training function"""
     print("Training VAERewardPrediction model starts.\n")
     model = model.to(device=device)
@@ -108,9 +109,11 @@ def trainVAERewardPrediction(model,
         for i, sample in enumerate(loader_train):
             model.train()
 
-            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype) for index in
+            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+                  for index in
                   range(10)]
-            ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype) for reward in rewards]
+            ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
+                  for reward in rewards]
 
             if train_decoder:
                 out, images = model(ts)
@@ -131,21 +134,23 @@ def trainVAERewardPrediction(model,
             if i % print_every == 0:
                 print('Training set: Epoch %d, Iteration %d, model loss = %.4f, encoder loss = %.4f, decoder loss = %.4f\n'
                       % (e, i, loss.item(), loss_encoder.item(), loss_decoder.item() if type(loss_decoder) != int else 0))
-                wandb.log({'Training encoder loss': loss_encoder.item(),
-                           'Training decoder loss': loss_decoder.item() if type(loss_decoder) != int else 0})
+                if not DEBUG:
+                    wandb.log({'Training encoder loss': loss_encoder.item(),
+                               'Training decoder loss': loss_decoder.item() if type(loss_decoder) != int else 0})
 
         if e % validate_every == 0:
-            validateVAERewardPrediction(model, rewards, train_decoder, loader_val, device, dtype)
+            validateVAERewardPrediction(model, rewards, train_decoder, loader_val, device, dtype, DEBUG=DEBUG)
 
-        if e % save_every == 0:
+        if e % save_every == 0 and not DEBUG:
             torch.save(model.state_dict(), model_path)
             print('Model saved to disk on Epoch %d at %s\n' % (e, datetime.now()))
 
-    torch.save(model.state_dict(), model_path)
+    if not DEBUG:
+        torch.save(model.state_dict(), model_path)
     print("Training complete. VAERewardPrediction model saved to disk.\n")
 
 
-def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, dtype):
+def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, dtype, DEBUG=False):
     """Validation function"""
     print('Running validation on VAERewardPrediction model...\n')
     criterion = nn.MSELoss()
@@ -154,24 +159,34 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
     loss_encoder_total = 0.0
     loss_decoder_total = 0.0
     count = 0
-    log_image = False
+    image_logged = False
 
     with torch.no_grad():
         for i, sample in enumerate(loader):
 
-            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype) for index in range(10)]
-            ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype) for reward in rewards]
+            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+                  for index in range(10)]
+            ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
+                  for reward in rewards]
 
             if train_decoder:
                 out, images = model(ts)
                 loss_decoder = [criterion(images[index], ts[index]) for index in range(len(images))]
-                if not log_image:
-                    index = np.random.randint(ts[0].size(0)) # TODO: log one image to wandb
-                    originals = [t[index,:,:,:].cpu().numpy() for t in ts]
-                    originals = [wandb.Image(np.moveaxis(x, 0, 2), caption='Ground Truth') for x in originals]
-                    predictions = [image[index,:,:,:].cpu().numpy() for image in images]
-                    predictions = [wandb.Image(np.moveaxis(x,0,2), caption='Prediction') for x in predictions]
-                    log_image = True
+                if not image_logged and not DEBUG: # log 10 images in a sequence
+                    log_ts = [sample['images'][0,index,0,:,:].unsqueeze(0).unsqueeze(0).to(device=device, dtype=dtype)
+                              for index in range(10)]
+                    _, log_images = model(log_ts)
+
+                    originals = [log_t.cpu().squeeze(0).numpy() for log_t in log_ts]
+                    predictions = [log_image.cpu().squeeze(0).numpy() for log_image in log_images]
+
+                    originals_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in originals], axis=1)
+                    predictions_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in predictions], axis=1)
+
+                    log_image_original = wandb.Image(originals_concat, caption='Ground truth')
+                    log_image_prediction = wandb.Image(predictions_concat, caption='Prediction')
+
+                    image_logged = True
             else:
                 out = model(ts)
                 loss_decoder = [0]
@@ -183,12 +198,12 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
 
     print('Validation set: average encoder loss: %.4f, average decoder loss: %.4f\n'
           % (loss_encoder_total / count, loss_decoder_total / count))
-    if train_decoder:
+    if train_decoder and not DEBUG:
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count,
-                   'Ground Truths': originals,
-                   'Predictions wrt rewards': predictions})
-    else:
+                   'Decoder ground truth': log_image_original,
+                   'Decoder prediction': log_image_prediction})
+    elif not DEBUG:
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count})
 
@@ -203,7 +218,8 @@ def trainVAEReconstruction(model,
                            epochs=100,
                            print_every=15,
                            save_every=30,
-                           validate_every=10):
+                           validate_every=10,
+                           DEBUG=False):
     """Training function"""
     print("Training VAEReconstruction model starts.\n")
     print()
@@ -214,8 +230,8 @@ def trainVAEReconstruction(model,
         for i, sample in enumerate(loader_train):
             model.train()
 
-            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype) for index in
-                  range(10)]
+            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+                  for index in range(10)]
 
             out = model(ts)
             losses = [criterion(out[index], ts[index]) for index in range(len(ts))]
@@ -227,40 +243,62 @@ def trainVAEReconstruction(model,
 
             if i % print_every == 0:
                 print('Training set: Epoch %d, Iteration %d, model loss = %.4f\n' % (e, i, loss.item()))
-                wandb.log({'Training reconstruction loss': loss.item()})
+                if not DEBUG:
+                    wandb.log({'Training reconstruction loss': loss.item()})
 
         if e % validate_every == 0:
-            validateVAEReconstruction(model, loader_val, device, dtype)
+            validateVAEReconstruction(model, loader_val, device, dtype, DEBUG=DEBUG)
 
-        if e % save_every == 0:
+        if e % save_every == 0 and not DEBUG:
             torch.save(model.state_dict(), model_path)
             print('Model saved to disk on Epoch %d at %s\n' % (e, datetime.now()))
 
-    torch.save(model.state_dict(), model_path)
+    if not DEBUG:
+        torch.save(model.state_dict(), model_path)
     print('Training complete. VAEReconstruction model saved to disk.\n')
 
 
-def validateVAEReconstruction(model, loader_val, device, dtype):
+def validateVAEReconstruction(model, loader_val, device, dtype, DEBUG=False):
     print('Running validation on VAEReconstruction model...\n')
     criterion = nn.MSELoss()
     model = model.to(device=device)
     model.eval()
     count = 0
     loss_total = 0
+    image_logged = False
 
     with torch.no_grad():
 
         for i, sample in enumerate(loader_val):
-            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype) for index in
-                  range(10)]
+            ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+                  for index in range(10)]
 
             out = model(ts)
+            if not image_logged and not DEBUG:  # log 10 images in a sequence
+                log_ts = [sample['images'][0, index, 0, :, :].unsqueeze(0).unsqueeze(0).to(device=device, dtype=dtype)
+                          for index in range(10)]
+                log_images = model(log_ts)
+
+                originals = [log_t.cpu().squeeze(0).numpy() for log_t in log_ts]
+                predictions = [log_image.cpu().squeeze(0).numpy() for log_image in log_images]
+
+                originals_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in originals], axis=1)
+                predictions_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in predictions], axis=1)
+
+                log_image_original = wandb.Image(originals_concat, caption='Ground truth')
+                log_image_prediction = wandb.Image(predictions_concat, caption='Prediction')
+
+                image_logged = True
+
             losses = [criterion(out[index], ts[index]) for index in range(len(ts))]
             loss_total += sum(losses)
             count += 1
 
-        print('Validation set: average model loss: %.4f\n' % (loss_total / count))
-        wandb.log({'Reconstruction loss': loss_total / count})
+    print('Validation set: average model loss: %.4f\n' % (loss_total / count))
+    if not DEBUG:
+        wandb.log({'Reconstruction loss': loss_total / count,
+                   'Decoder ground truth': log_image_original,
+                   'Decoder prediction': log_image_prediction})
 
 
 '''RL stuff here'''

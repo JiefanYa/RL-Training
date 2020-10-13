@@ -150,8 +150,8 @@ class VAEReconstructionModel(nn.Module):
 
         def naive_forward(ts):
             ts_batch, num = batchify(ts)
-            zts_batch = self.encoder(ts_batch, rl)
-            zts_decode_batch = self.decoder(zts_batch, rl)
+            zts_batch = self.encoder(ts_batch)
+            zts_decode_batch = self.decoder(zts_batch)
             zts_decode = unbatchify(zts_decode_batch, num)
             return zts_decode
 
@@ -322,7 +322,8 @@ def main(DEBUG=False):
                                args.model_path,
                                device,
                                dtype,
-                               epochs=args.epochs)
+                               epochs=args.epochs,
+                               DEBUG=DEBUG)
     else:
         trainVAERewardPrediction(model,
                                  reward_names,
@@ -333,7 +334,8 @@ def main(DEBUG=False):
                                  args.model_path,
                                  device,
                                  dtype,
-                                 epochs=args.epochs)
+                                 epochs=args.epochs,
+                                 DEBUG=DEBUG)
 
 
 if __name__ == "__main__":
