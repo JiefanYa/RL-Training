@@ -110,20 +110,21 @@ def trainVAERewardPrediction(model,
             model.train()
 
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-                  for index in
-                  range(10)]
-            ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
-                  for reward in rewards]
+                  for index in range(10)]
+            ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+                        for index in range(10, 30)]
+            ys_reward = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
+                         for reward in rewards]
 
             if train_decoder:
-                out, images = model(ts)
-                loss_decoder = [criterion(images[index], ts[index]) for index in range(len(images))]
+                out, preds = model(ts)
+                loss_decoder = [criterion(preds[index], ys_image[index]) for index in range(len(preds))]
                 loss_decoder = sum(loss_decoder)
             else:
                 out = model(ts)
                 loss_decoder = 0
 
-            loss_encoder = [criterion(out[index], ys[index]) for index in range(len(rewards))]
+            loss_encoder = [criterion(out[index], ys_reward[index]) for index in range(len(rewards))]
             loss_encoder = sum(loss_encoder)
             loss = loss_encoder + loss_decoder
 
@@ -166,32 +167,34 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
 
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
-            ys = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
+            ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+                  for index in range(10, 30)]
+            ys_reward = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
                   for reward in rewards]
 
             if train_decoder:
-                out, images = model(ts)
-                loss_decoder = [criterion(images[index], ts[index]) for index in range(len(images))]
-                if not image_logged and not DEBUG: # log 10 images in a sequence
-                    log_ts = [sample['images'][0,index,0,:,:].unsqueeze(0).unsqueeze(0).to(device=device, dtype=dtype)
-                              for index in range(10)]
-                    _, log_images = model(log_ts)
+                out, preds = model(ts)
+                loss_decoder = [criterion(preds[index], ys_image[index]) for index in range(len(preds))]
 
-                    originals = [log_t.cpu().squeeze(0).numpy() for log_t in log_ts]
-                    predictions = [log_image.cpu().squeeze(0).numpy() for log_image in log_images]
+                if not image_logged and not DEBUG:  # log first 10 predicted images in a sequence
 
-                    originals_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in originals], axis=1)
-                    predictions_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in predictions], axis=1)
+                    log_oris = [ys_image[index][0,:,:,:].cpu().numpy() for index in range(10)]
+                    log_preds = [preds[index][0,:,:,:].cpu().numpy() for index in range(10)]
 
-                    log_image_original = wandb.Image(originals_concat, caption='Ground truth')
-                    log_image_prediction = wandb.Image(predictions_concat, caption='Prediction')
+                    oris_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_oris], axis=1)
+                    preds_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_preds], axis=1)
+                    log_image_concat = np.concatenate([preds_concat, oris_concat], axis=0)
+
+                    log_image_original = wandb.Image(oris_concat, caption='Ground truth')
+                    log_image_prediction = wandb.Image(preds_concat, caption='Prediction')
+                    # log_image = wandb.Image(log_image_concat, caption='Prediction/Ground truth')
 
                     image_logged = True
             else:
                 out = model(ts)
                 loss_decoder = [0]
 
-            loss_encoder = [criterion(out[index], ys[index]) for index in range(len(rewards))]
+            loss_encoder = [criterion(out[index], ys_reward[index]) for index in range(len(rewards))]
             loss_encoder_total += sum(loss_encoder)
             loss_decoder_total += sum(loss_decoder)
             count += 1
@@ -201,6 +204,7 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
     if train_decoder and not DEBUG:
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count,
+                   # 'Decoder output': log_image
                    'Decoder ground truth': log_image_original,
                    'Decoder prediction': log_image_prediction})
     elif not DEBUG:
@@ -222,7 +226,6 @@ def trainVAEReconstruction(model,
                            DEBUG=False):
     """Training function"""
     print("Training VAEReconstruction model starts.\n")
-    print()
     model = model.to(device=device)
     criterion = nn.MSELoss()
 
@@ -232,9 +235,11 @@ def trainVAEReconstruction(model,
 
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
+            ys = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+                  for index in range(10, 30)]
 
             out = model(ts)
-            losses = [criterion(out[index], ts[index]) for index in range(len(ts))]
+            losses = [criterion(out[index], ys[index]) for index in range(len(out))]
             loss = sum(losses)
 
             optimizer.zero_grad()
@@ -272,31 +277,33 @@ def validateVAEReconstruction(model, loader_val, device, dtype, DEBUG=False):
         for i, sample in enumerate(loader_val):
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
+            ys = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+                  for index in range(10, 30)]
 
             out = model(ts)
-            if not image_logged and not DEBUG:  # log 10 images in a sequence
-                log_ts = [sample['images'][0, index, 0, :, :].unsqueeze(0).unsqueeze(0).to(device=device, dtype=dtype)
-                          for index in range(10)]
-                log_images = model(log_ts)
+            if not image_logged and not DEBUG:  # log first 10 predicted images in a sequence
 
-                originals = [log_t.cpu().squeeze(0).numpy() for log_t in log_ts]
-                predictions = [log_image.cpu().squeeze(0).numpy() for log_image in log_images]
+                log_oris = [ys[index][0, :, :, :].cpu().numpy() for index in range(10)]
+                log_preds = [out[index][0, :, :, :].cpu().numpy() for index in range(10)]
 
-                originals_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in originals], axis=1)
-                predictions_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in predictions], axis=1)
+                oris_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_oris], axis=1)
+                preds_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_preds], axis=1)
+                log_image_concat = np.concatenate([preds_concat, oris_concat], axis=0)
 
-                log_image_original = wandb.Image(originals_concat, caption='Ground truth')
-                log_image_prediction = wandb.Image(predictions_concat, caption='Prediction')
+                log_image_original = wandb.Image(oris_concat, caption='Ground truth')
+                log_image_prediction = wandb.Image(preds_concat, caption='Prediction')
+                # log_image = wandb.Image(log_image_concat, caption='Prediction/Ground truth')
 
                 image_logged = True
 
-            losses = [criterion(out[index], ts[index]) for index in range(len(ts))]
+            losses = [criterion(out[index], ys[index]) for index in range(len(out))]
             loss_total += sum(losses)
             count += 1
 
     print('Validation set: average model loss: %.4f\n' % (loss_total / count))
     if not DEBUG:
         wandb.log({'Reconstruction loss': loss_total / count,
+                   # 'Decoder output': log_image,
                    'Decoder ground truth': log_image_original,
                    'Decoder prediction': log_image_prediction})
 

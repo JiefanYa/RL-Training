@@ -23,7 +23,7 @@ class Encoder(nn.Module):
             cnn_layers.append(nn.Conv2d(num_channels if i != 0 else 1, num_channels * 2 if i != 0 else num_channels,
                                         kernel_size=4, stride=2, padding=1))
             cnn_layers.append(nn.BatchNorm2d(num_channels * 2 if i != 0 else num_channels))
-            cnn_layers.append(nn.LeakyReLU())
+            cnn_layers.append(nn.ReLU())
             if i != 0:
                 num_channels *= 2
 
@@ -41,9 +41,8 @@ class Encoder(nn.Module):
             return out
 
         if rl:
-            with torch.no_grad():
-                x = torch.unsqueeze(x, dim=1) # insert 1 channel dim
-                return naive_forward(x)
+            x = torch.unsqueeze(x, dim=1) # insert 1 channel dim
+            return naive_forward(x)
         else:
             return naive_forward(x)
 
@@ -59,19 +58,11 @@ class EncoderCNN(nn.Module):
         self.layers = nn.ModuleList(cnn_layers)
 
     def forward(self, x, rl=True):
-        def naive_forward(x):
-            out = x
-            for layer in self.layers:
-                out = layer(out)
-            out = torch.reshape(out, (out.shape[0],-1)) # flatten
-            return out
-
-        if rl:
-            with torch.no_grad(): # Question: do we finetune i.e. train the cnn?
-                x = torch.unsqueeze(x, dim=1) # insert 1 channel dim
-                return naive_forward(x)
-        else:
-            return naive_forward(x)
+        out = torch.unsqueeze(x, dim=1)  # insert 1 channel dim
+        for layer in self.layers:
+            out = layer(out)
+        out = torch.reshape(out, (out.shape[0], -1))  # flatten
+        return out
 
 
 class EncoderOracle(nn.Module):
@@ -90,7 +81,13 @@ class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.decoder_input = nn.Linear(64, 128)
+        self.sequence_length = 20
+        self.mlp_params = {'num_layers': 3, 'input_dim': 256, 'l1_dim': 512, 'l2_dim': 128,
+                           'output_dim': 128}
+        self.mlp = MLP(self.mlp_params)
+
+        # self.decoder_input = nn.Linear(256, 128) # lstm hidden dim, encoder output dim
+
         self.num_layers = 6
         num_channels = 128
 
@@ -99,13 +96,14 @@ class Decoder(nn.Module):
             cnn_layers.append(nn.ConvTranspose2d(num_channels, num_channels // 2 if i != self.num_layers - 1 else 1,
                                                  kernel_size=4, stride=2, padding=1))
             cnn_layers.append(nn.BatchNorm2d(num_channels // 2 if i != self.num_layers - 1 else 1))
-            cnn_layers.append(nn.LeakyReLU())
+            cnn_layers.append(nn.LeakyReLU()) # TODO: activation function should consider range
             if i != self.num_layers - 1:
                 num_channels //= 2
         self.layers = nn.ModuleList(cnn_layers)
 
     def forward(self, x):
-        out = self.decoder_input(x)
+        # out = self.decoder_input(x)
+        out = self.mlp(x)
         out = out.unsqueeze(2).unsqueeze(3)
         for layer in self.layers:
             out = layer(out)
@@ -145,32 +143,36 @@ class VAEReconstructionModel(nn.Module):
 
         self.encoder = Encoder()
         self.decoder = Decoder()
+        self.predictor_params = {'input_sequence_length': 10, 'sequence_length': 20}
+        self.predictor = Predictor(self.predictor_params)
 
     def forward(self, ts, rl=False):
 
-        def naive_forward(ts):
-            ts_batch, num = batchify(ts)
-            zts_batch = self.encoder(ts_batch)
-            zts_decode_batch = self.decoder(zts_batch)
-            zts_decode = unbatchify(zts_decode_batch, num)
-            return zts_decode
-
         if rl:
             with torch.no_grad():
-                return naive_forward(ts)
+                ts = torch.unsqueeze(ts, dim=1)  # insert 1 channel dim
+                zts = self.encoder(ts)
+                return zts
         else:
-            return naive_forward(ts)
+            ts_batch, num = batchify(ts)
+            zts_batch = self.encoder(ts_batch)
+            zts = unbatchify(zts_batch, num)
+            h1tT = self.predictor(zts)
+            h1tT_batch, size = batchify(h1tT)
+            h1tT_decode_batch = self.decoder(h1tT_batch)
+            h1tT_decode = unbatchify(h1tT_decode_batch, size)
+            return h1tT_decode
 
 
 class VAERewardPredictionModel(nn.Module):
     """complete architecture"""
 
-    def __init__(self, num_reward_heads=7, train_decoder=False):
+    def __init__(self, num_reward_heads=4, train_decoder=False):
         super().__init__()
 
         self.encoder = Encoder()
         self.train_decoder = train_decoder
-        if self.train_decoder:
+        if train_decoder:
             self.decoder = Decoder()
 
         self.predictor_params = {'input_sequence_length': 10, 'sequence_length': 20}
@@ -188,10 +190,8 @@ class VAERewardPredictionModel(nn.Module):
     def forward(self, ts, rl=False):
         if rl:
             with torch.no_grad():
-                ts_batch, num = batchify(ts)
-                ts_batch = torch.unsqueeze(ts_batch, dim=1) # insert 1 channel dim
-                zts_batch = self.encoder(ts_batch)
-                zts = unbatchify(zts_batch, num)
+                ts = torch.unsqueeze(ts, dim=1)  # insert 1 channel dim
+                zts = self.encoder(ts)
                 return zts
 
         ts_batch, num = batchify(ts)
@@ -209,11 +209,11 @@ class VAERewardPredictionModel(nn.Module):
             reward_estimates.append(rewards)
 
         if self.train_decoder:
-            zts_detach = [zt.detach() for zt in zts]
-            zts_detach_batch, num = batchify(zts_detach)
-            zts_decode_batch = self.decoder(zts_detach_batch)
-            zts_decode = unbatchify(zts_decode_batch, num)
-            return reward_estimates, zts_decode
+            h1tT_batch_detach = h1tT_batch.detach()
+            h1tT_decode_batch = self.decoder(h1tT_batch_detach)
+            h1tT_decode = unbatchify(h1tT_decode_batch, size)
+            return reward_estimates, h1tT_decode
+
         return reward_estimates
 
 
@@ -340,5 +340,5 @@ def main(DEBUG=False):
 
 if __name__ == "__main__":
 
-    DEBUG=False
+    DEBUG=True
     main(DEBUG=DEBUG)

@@ -135,9 +135,9 @@ class Policy(nn.Module):
             'cnn': {'class': EncoderCNN, 'model_path': None},
             'image-scratch': {'class': Encoder, 'model_path': None},
             'image-reconstruction': {'class': VAEReconstructionModel,
-                                     'model_path': model_dir+'encoder_reconstruction_'+v+'.pt'},
+                                     'model_path': model_dir+'vae_img_recon_'+v+'.pt'},
             'reward-prediction': {'class': VAERewardPredictionModel,
-                                  'model_path': model_dir+'encoder_reward_prediction_'+v+'.pt'},
+                                  'model_path': model_dir+'vae_reward_4_head_'+v+'.pt'},
             'oracle': {'class': EncoderOracle, 'model_path': None},
         }
 
@@ -359,7 +359,7 @@ def get_args():
     parser.add_argument(
         '--num-steps',
         type=int,
-        default=2000,
+        default=1000,
         help='number of steps of env steps collected in each iteration')
     parser.add_argument(
         '--ppo-epoch',
@@ -402,8 +402,8 @@ def get_args():
     parser.add_argument(
         '--num-env-steps',
         type=int,
-        default=5e6,
-        help='number of environment steps to train (default: 20e6)')
+        default=10e6,
+        help='number of environment steps to train (default: 10e6)')
     parser.add_argument(
         '--env-name',
         default='SpritesState-v0',
