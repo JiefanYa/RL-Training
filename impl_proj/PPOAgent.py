@@ -468,7 +468,7 @@ def main_multi_thread(DEBUG=False):
     rollouts.to(device)
 
     episode_reward = torch.zeros(args.num_processes, 1)
-    episode_rewards = deque(maxlen=50)
+    episode_rewards = deque(maxlen=200)
 
     print('Training starts at %s\n' % (datetime.now()))
 

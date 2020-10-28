@@ -49,29 +49,22 @@ class MLP(nn.Module):
 def loadVAEData(spec,
                 batch_size=32,
                 save_to_disk=False,
-                decoder=False,
-                new=False,
-                path=None,
-                train_num=5000,
-                val_num=1000,
-                test_num=1000):
+                new=True,
+                train_num=50,
+                val_num=10,
+                test_num=10):
 
     """Return dataloaders for train/val/test datasets"""
     global train_dataset, val_dataset, test_dataset
     if save_to_disk:
         # for test/inspection: save dataset to disk, decoder dataset only has one object
-        train = path + '/train.data'
-        val = path + '/val.data'
-        test = path + '/test.data'
+        train = './data/train.data'
+        val = './data/val.data'
+        test = './data/test.data'
         try:
-            if decoder:
-                train_dataset = DecoderDataset(spec, train_num, train) if new else torch.load(train)
-                val_dataset = DecoderDataset(spec, val_num, val) if new else torch.load(val)
-                test_dataset = DecoderDataset(spec, test_num, test) if new else torch.load(test)
-            else:
-                train_dataset = EncoderDataset(spec, train_num, train) if new else torch.load(train)
-                val_dataset = EncoderDataset(spec, val_num, val) if new else torch.load(val)
-                test_dataset = EncoderDataset(spec, test_num, test) if new else torch.load(test)
+            train_dataset = EncoderDataset(spec, train_num, train) if new else torch.load(train)
+            val_dataset = EncoderDataset(spec, val_num, val) if new else torch.load(val)
+            test_dataset = EncoderDataset(spec, test_num, test) if new else torch.load(test)
         except Exception as err:
             print('Error when loading dataset: ' + str(err))
     else:
@@ -98,7 +91,7 @@ def trainVAERewardPrediction(model,
                              epochs=100,
                              print_every=15,
                              save_every=30,
-                             validate_every=10,
+                             validate_every=100,
                              DEBUG=False):
     """Training function"""
     print("Training VAERewardPrediction model starts.\n")
@@ -109,17 +102,39 @@ def trainVAERewardPrediction(model,
         for i, sample in enumerate(loader_train):
             model.train()
 
+            sample = sample[1]
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
             ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                         for index in range(10, 30)]
             ys_reward = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
                          for reward in rewards]
+            # ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+            #       for index in range(30)]
+            # ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+            #             for index in range(30)]
+            # ys_reward = [sample['rewards'][reward].to(device=device, dtype=dtype)
+            #              for reward in rewards]
 
             if train_decoder:
                 out, preds = model(ts)
                 loss_decoder = [criterion(preds[index], ys_image[index]) for index in range(len(preds))]
                 loss_decoder = sum(loss_decoder)
+
+                # # DEBUG
+                # if e % validate_every == 0:
+                #     with torch.no_grad():
+                #         log_oris = [ys_image[index][0, :, :, :].cpu().numpy() for index in range(10)]
+                #         log_preds = [preds[index][0, :, :, :].cpu().numpy() for index in range(10)]
+                #
+                #         oris_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_oris], axis=1)
+                #         preds_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_preds], axis=1)
+                #
+                #         log_image_original = wandb.Image(oris_concat, caption='Ground truth')
+                #         log_image_prediction = wandb.Image(preds_concat, caption='Prediction')
+                #
+                #         wandb.log({'Decoder ground truth': log_image_original,
+                #                    'Decoder prediction': log_image_prediction})
             else:
                 out = model(ts)
                 loss_decoder = 0
@@ -165,12 +180,19 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
     with torch.no_grad():
         for i, sample in enumerate(loader):
 
+            sample = sample[1]
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
             ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-                  for index in range(10, 30)]
+                        for index in range(10, 30)]
             ys_reward = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
-                  for reward in rewards]
+                         for reward in rewards]
+            # ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+            #       for index in range(30)]
+            # ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
+            #             for index in range(30)]
+            # ys_reward = [sample['rewards'][reward].to(device=device, dtype=dtype)
+            #              for reward in rewards]
 
             if train_decoder:
                 out, preds = model(ts)

@@ -15,19 +15,13 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.num_layers = 6
-        num_channels = 4
-        cnn_layers = []
-
-        for i in range(self.num_layers):
-            cnn_layers.append(nn.Conv2d(num_channels if i != 0 else 1, num_channels * 2 if i != 0 else num_channels,
-                                        kernel_size=4, stride=2, padding=1))
-            cnn_layers.append(nn.BatchNorm2d(num_channels * 2 if i != 0 else num_channels))
-            cnn_layers.append(nn.ReLU())
-            if i != 0:
-                num_channels *= 2
-
-        self.layers = nn.ModuleList(cnn_layers)
+        cnn_layers = [nn.Conv2d(1,4,kernel_size=4, stride=2, padding=1), nn.ReLU(),
+                      nn.Conv2d(4,8,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(8), nn.ReLU(),
+                      nn.Conv2d(8,16,kernel_size=4, stride=2, padding=1), nn.ReLU(),
+                      nn.Conv2d(16,32,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
+                      nn.Conv2d(32,64,kernel_size=4, stride=2, padding=1), nn.ReLU(),
+                      nn.Conv2d(64,128,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU()]
+        self.layers = nn.ModuleList(cnn_layers)  # (batch, 1, 64, 64) => (batch, 128, 1, 1)
         self.mapping = nn.Linear(128, 64)
 
     def forward(self, x, rl=False):
@@ -35,16 +29,13 @@ class Encoder(nn.Module):
             out = x
             for layer in self.layers:
                 out = layer(out)
-            out = torch.squeeze(out, dim=2)  # use dim (batch can be 1)
-            out = torch.squeeze(out, dim=2)
-            out = self.mapping(out)
+            out = torch.reshape(out, (out.shape[0], -1)) # (batch, 128, 1, 1) => (batch, 128)
+            out = self.mapping(out)  # (batch, 128) => (batch, 64)
             return out
 
         if rl:
-            x = torch.unsqueeze(x, dim=1) # insert 1 channel dim
-            return naive_forward(x)
-        else:
-            return naive_forward(x)
+            x = torch.unsqueeze(x, dim=1)  # insert 1 channel dim (batch, 64, 64) => (batch, 1, 64, 64)
+        return naive_forward(x)
 
 
 class EncoderCNN(nn.Module):
@@ -81,29 +72,21 @@ class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.sequence_length = 20
-        self.mlp_params = {'num_layers': 3, 'input_dim': 256, 'l1_dim': 512, 'l2_dim': 128,
-                           'output_dim': 128}
-        self.mlp = MLP(self.mlp_params)
+        # self.sequence_length = 20
+        # self.mlp_params = {'num_layers': 2, 'input_dim': 256, 'l1_dim': 64, 'output_dim': 128}
+        # self.mlp = MLP(self.mlp_params)
+        self.mapping = nn.Linear(64, 128)
 
-        # self.decoder_input = nn.Linear(256, 128) # lstm hidden dim, encoder output dim
-
-        self.num_layers = 6
-        num_channels = 128
-
-        cnn_layers = []
-        for i in range(self.num_layers):
-            cnn_layers.append(nn.ConvTranspose2d(num_channels, num_channels // 2 if i != self.num_layers - 1 else 1,
-                                                 kernel_size=4, stride=2, padding=1))
-            cnn_layers.append(nn.BatchNorm2d(num_channels // 2 if i != self.num_layers - 1 else 1))
-            cnn_layers.append(nn.LeakyReLU()) # TODO: activation function should consider range
-            if i != self.num_layers - 1:
-                num_channels //= 2
+        cnn_layers = [nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+                      nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1), nn.ReLU(),
+                      nn.ConvTranspose2d(32, 16, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(16), nn.ReLU(),
+                      nn.ConvTranspose2d(16, 8, kernel_size=4, stride=2, padding=1), nn.ReLU(),
+                      nn.ConvTranspose2d(8, 4, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(4), nn.ReLU(),
+                      nn.ConvTranspose2d(4, 1, kernel_size=4, stride=2, padding=1), nn.Tanh()]
         self.layers = nn.ModuleList(cnn_layers)
 
     def forward(self, x):
-        # out = self.decoder_input(x)
-        out = self.mlp(x)
+        out = self.mapping(x)
         out = out.unsqueeze(2).unsqueeze(3)
         for layer in self.layers:
             out = layer(out)
@@ -116,22 +99,49 @@ class Predictor(nn.Module):
     def __init__(self, params):
         super().__init__()
 
-        self.input_size = 128
-        self.hidden_size = 256
         self.input_sequence_length = params['input_sequence_length']
-        self.sequence_length = params['sequence_length']
+        self.output_sequence_length = params['output_sequence_length']
+        self.sequence_length = self.input_sequence_length + self.output_sequence_length
 
-        self.mlp_params = {'num_layers': 3, 'input_dim': 64 * self.input_sequence_length, 'l1_dim': 512, 'l2_dim': 256,
-                           'output_dim': self.input_size}
-        self.mlp = MLP(self.mlp_params)
-        self.lstm = nn.LSTM(self.input_size, self.hidden_size, batch_first=True)
+        self.mlp_params = {'num_layers': 3,
+                           'input_dim': 64 * self.input_sequence_length,
+                           'l1_dim': 512,
+                           'l2_dim': 256,
+                           'output_dim': 512}
+        self.init_hidden = MLP(self.mlp_params)
+        self.init_cell = MLP(self.mlp_params)
 
-    def forward(self, zs):
-        z_cat = torch.cat(zs, dim=1)
-        z_embed = self.mlp(z_cat)
-        embed_stack = torch.stack([z_embed] * self.sequence_length, dim=1)
-        lstm_out, _ = self.lstm(embed_stack)  # (batch_size, seq_len, hidden_dim)
-        return lstm_out
+        self.lstm = nn.LSTM(64, 512, batch_first=True)
+        self.mapping = nn.Linear(512, 64)  # hidden_state => embedding
+
+    def forward(self, zts):
+        # z_cat = torch.cat(zs, dim=1)
+        # z_embed = self.mlp(z_cat)
+        # embed_stack = torch.stack([z_embed] * self.sequence_length, dim=1)
+        # lstm_out, _ = self.lstm(embed_stack)  # (batch_size, seq_len, hidden_dim)
+        # return lstm_out
+
+        # batch_size = zts.shape[0]
+        # z_cat = zts.reshape(batch_size,-1)  # (batch, input_seq * 64)
+        # hidden_init = self.mlp(z_cat).reshape(1,batch_size,512)  # (1, batch, 512)
+        # hidden = (hidden_init, torch.zeros(1,batch_size,512).cuda())  # initialized hidden state
+        # out, hidden = self.lstm(zts, hidden)  # (batch_size, seq_len, hidden_dim)
+
+        # zts = unbatchify(zts_batch, self.sequence_length, toTensor=True)  # (batch, seq, 64)
+        # out, _ = self.lstm(zts)  # Question: need clarification
+        # out = self.mapping(out)
+        # return out
+
+        batch_size = zts.size(0)
+        mlp_input = zts.reshape(batch_size, -1)
+        hidden = self.init_hidden(mlp_input)
+        cell = self.init_cell(mlp_input)
+        hidden = torch.unsqueeze(hidden, dim=0)  # (1, 32, 512)
+        cell = torch.unsqueeze(cell, dim=0)  # (1, 32, 512)
+        input = torch.zeros(batch_size, self.output_sequence_length, 64).cuda()  # (batch, 20, 64)
+        out, _ = self.lstm(input, (hidden, cell))  # (batch, 20, 512)
+        out = self.mapping(out)  # (batch, 20, 64)
+        return out
 
 
 class VAEReconstructionModel(nn.Module):
@@ -175,10 +185,10 @@ class VAERewardPredictionModel(nn.Module):
         if train_decoder:
             self.decoder = Decoder()
 
-        self.predictor_params = {'input_sequence_length': 10, 'sequence_length': 20}
+        self.predictor_params = {'input_sequence_length': 10, 'output_sequence_length': 20}
         self.predictor = Predictor(self.predictor_params)
 
-        self.reward_mlp_params = {'num_layers': 3, 'input_dim': 256, 'l1_dim': 256, 'l2_dim': 64, 'output_dim': 1}
+        self.reward_mlp_params = {'num_layers': 3, 'input_dim': 64, 'l1_dim': 256, 'l2_dim': 128, 'output_dim': 1}
         self.K = num_reward_heads
         reward_heads = []
 
@@ -196,9 +206,9 @@ class VAERewardPredictionModel(nn.Module):
 
         ts_batch, num = batchify(ts)
         zts_batch = self.encoder(ts_batch)
-        zts = unbatchify(zts_batch, num)
+        zts = unbatchify(zts_batch, num, toTensor=True)
 
-        h1tT = self.predictor(zts)  # (batch_size, seq_len, hidden_dim)
+        h1tT = self.predictor(zts)
         h1tT_batch, size = batchify(h1tT)
 
         reward_estimates = []
@@ -293,7 +303,9 @@ def main(DEBUG=False):
         rewards=reward_classes
     )
 
-    train_loader, val_loader, test_loader = loadVAEData(spec, batch_size=args.batch_size)
+    # train_loader, val_loader, test_loader = loadVAEData(spec, batch_size=args.batch_size)
+    # DEBUG:
+    train_loader, val_loader, test_loader = loadVAEData(spec, save_to_disk=True, batch_size=args.batch_size)
 
     if args.reconstruction:
         model = VAEReconstructionModel()
@@ -340,5 +352,5 @@ def main(DEBUG=False):
 
 if __name__ == "__main__":
 
-    DEBUG=True
+    DEBUG=False
     main(DEBUG=DEBUG)
