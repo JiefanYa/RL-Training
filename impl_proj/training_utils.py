@@ -49,18 +49,20 @@ class MLP(nn.Module):
 def loadVAEData(spec,
                 batch_size=32,
                 save_to_disk=False,
-                new=True,
-                train_num=50,
-                val_num=10,
-                test_num=10):
+                new=False,
+                train_num=2000,
+                val_num=200,
+                test_num=200,
+                OVERFIT=False):
 
     """Return dataloaders for train/val/test datasets"""
     global train_dataset, val_dataset, test_dataset
+
     if save_to_disk:
-        # for test/inspection: save dataset to disk, decoder dataset only has one object
-        train = './data/train.data'
-        val = './data/val.data'
-        test = './data/test.data'
+        train = './data/overfit/train.data' if OVERFIT else './data/train.data'
+        val = './data/overfit/val.data' if OVERFIT else './data/val.data'
+        test = './data/overfit/test.data' if OVERFIT else './data/test.data'
+
         try:
             train_dataset = EncoderDataset(spec, train_num, train) if new else torch.load(train)
             val_dataset = EncoderDataset(spec, val_num, val) if new else torch.load(val)
@@ -91,7 +93,7 @@ def trainVAERewardPrediction(model,
                              epochs=100,
                              print_every=15,
                              save_every=30,
-                             validate_every=100,
+                             validate_every=30,
                              DEBUG=False):
     """Training function"""
     print("Training VAERewardPrediction model starts.\n")
@@ -102,39 +104,33 @@ def trainVAERewardPrediction(model,
         for i, sample in enumerate(loader_train):
             model.train()
 
-            sample = sample[1]
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
             ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-                        for index in range(10, 30)]
-            ys_reward = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
+                        for index in range(10, 20)]
+            ys_reward = [sample['rewards'][reward].narrow(1, 10, 10).to(device=device, dtype=dtype)
                          for reward in rewards]
-            # ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-            #       for index in range(30)]
-            # ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-            #             for index in range(30)]
-            # ys_reward = [sample['rewards'][reward].to(device=device, dtype=dtype)
-            #              for reward in rewards]
 
             if train_decoder:
                 out, preds = model(ts)
                 loss_decoder = [criterion(preds[index], ys_image[index]) for index in range(len(preds))]
                 loss_decoder = sum(loss_decoder)
 
-                # # DEBUG
-                # if e % validate_every == 0:
-                #     with torch.no_grad():
-                #         log_oris = [ys_image[index][0, :, :, :].cpu().numpy() for index in range(10)]
-                #         log_preds = [preds[index][0, :, :, :].cpu().numpy() for index in range(10)]
-                #
-                #         oris_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_oris], axis=1)
-                #         preds_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_preds], axis=1)
-                #
-                #         log_image_original = wandb.Image(oris_concat, caption='Ground truth')
-                #         log_image_prediction = wandb.Image(preds_concat, caption='Prediction')
-                #
-                #         wandb.log({'Decoder ground truth': log_image_original,
-                #                    'Decoder prediction': log_image_prediction})
+                if e % validate_every == 0 and not DEBUG:
+
+                    with torch.no_grad():
+                        log_oris = [ys_image[index][0, :, :, :].cpu().numpy() for index in range(10)]
+                        log_preds = [preds[index][0, :, :, :].cpu().numpy() for index in range(10)]
+
+                        oris_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_oris], axis=1)
+                        preds_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_preds], axis=1)
+
+                        log_image_original = wandb.Image(oris_concat, caption='Ground truth')
+                        log_image_prediction = wandb.Image(preds_concat, caption='Prediction')
+
+                        wandb.log({'Train original': log_image_original,
+                                   'Train prediction': log_image_prediction})
+
             else:
                 out = model(ts)
                 loss_decoder = 0
@@ -154,8 +150,8 @@ def trainVAERewardPrediction(model,
                     wandb.log({'Training encoder loss': loss_encoder.item(),
                                'Training decoder loss': loss_decoder.item() if type(loss_decoder) != int else 0})
 
-        if e % validate_every == 0:
-            validateVAERewardPrediction(model, rewards, train_decoder, loader_val, device, dtype, DEBUG=DEBUG)
+        # if e % validate_every == 0:
+        #     validateVAERewardPrediction(model, rewards, train_decoder, loader_val, device, dtype, DEBUG=DEBUG)
 
         if e % save_every == 0 and not DEBUG:
             torch.save(model.state_dict(), model_path)
@@ -180,19 +176,12 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
     with torch.no_grad():
         for i, sample in enumerate(loader):
 
-            sample = sample[1]
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
             ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-                        for index in range(10, 30)]
-            ys_reward = [sample['rewards'][reward].narrow(1, 10, 20).to(device=device, dtype=dtype)
+                        for index in range(10, 20)]
+            ys_reward = [sample['rewards'][reward].narrow(1, 10, 10).to(device=device, dtype=dtype)
                          for reward in rewards]
-            # ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-            #       for index in range(30)]
-            # ys_image = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-            #             for index in range(30)]
-            # ys_reward = [sample['rewards'][reward].to(device=device, dtype=dtype)
-            #              for reward in rewards]
 
             if train_decoder:
                 out, preds = model(ts)
@@ -205,11 +194,9 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
 
                     oris_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_oris], axis=1)
                     preds_concat = np.concatenate([np.moveaxis(x, 0, 2) for x in log_preds], axis=1)
-                    log_image_concat = np.concatenate([preds_concat, oris_concat], axis=0)
 
                     log_image_original = wandb.Image(oris_concat, caption='Ground truth')
                     log_image_prediction = wandb.Image(preds_concat, caption='Prediction')
-                    # log_image = wandb.Image(log_image_concat, caption='Prediction/Ground truth')
 
                     image_logged = True
             else:
@@ -226,9 +213,8 @@ def validateVAERewardPrediction(model, rewards, train_decoder, loader, device, d
     if train_decoder and not DEBUG:
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count,
-                   # 'Decoder output': log_image
-                   'Decoder ground truth': log_image_original,
-                   'Decoder prediction': log_image_prediction})
+                   'Validate original': log_image_original,
+                   'Validate prediction': log_image_prediction})
     elif not DEBUG:
         wandb.log({'Encoder loss': loss_encoder_total / count,
                    'Decoder loss': loss_decoder_total / count})
@@ -258,7 +244,7 @@ def trainVAEReconstruction(model,
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
             ys = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-                  for index in range(10, 30)]
+                  for index in range(10, 20)]
 
             out = model(ts)
             losses = [criterion(out[index], ys[index]) for index in range(len(out))]
@@ -300,7 +286,7 @@ def validateVAEReconstruction(model, loader_val, device, dtype, DEBUG=False):
             ts = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
                   for index in range(10)]
             ys = [sample['images'][:, index, 0, :, :].unsqueeze(1).to(device=device, dtype=dtype)
-                  for index in range(10, 30)]
+                  for index in range(10, 20)]
 
             out = model(ts)
             if not image_logged and not DEBUG:  # log first 10 predicted images in a sequence

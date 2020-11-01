@@ -15,27 +15,45 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
 
-        cnn_layers = [nn.Conv2d(1,4,kernel_size=4, stride=2, padding=1), nn.ReLU(),
-                      nn.Conv2d(4,8,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(8), nn.ReLU(),
-                      nn.Conv2d(8,16,kernel_size=4, stride=2, padding=1), nn.ReLU(),
-                      nn.Conv2d(16,32,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
-                      nn.Conv2d(32,64,kernel_size=4, stride=2, padding=1), nn.ReLU(),
-                      nn.Conv2d(64,128,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU()]
-        self.layers = nn.ModuleList(cnn_layers)  # (batch, 1, 64, 64) => (batch, 128, 1, 1)
+        # # paper architecture doesn't work  (too few filters in the first layer)
+        # cnn_layers = [nn.Conv2d(1,4,kernel_size=4, stride=2, padding=1), nn.ReLU(),
+        #               nn.Conv2d(4,8,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(8), nn.ReLU(),
+        #               nn.Conv2d(8,16,kernel_size=4, stride=2, padding=1), nn.ReLU(),
+        #               nn.Conv2d(16,32,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
+        #               nn.Conv2d(32,64,kernel_size=4, stride=2, padding=1), nn.ReLU(),
+        #               nn.Conv2d(64,128,kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU()]
+        # self.layers = nn.ModuleList(cnn_layers)  # (batch, 1, 64, 64) => (batch, 128, 1, 1)
+        # self.mapping = nn.Linear(128, 64)
+
+        # # cnn works
+        # cnn_layers = [nn.Conv2d(1, 16, kernel_size=3, stride=2), nn.ReLU(),
+        #               nn.Conv2d(16, 16, kernel_size=3, stride=2), nn.ReLU(),
+        #               nn.Conv2d(16, 16, kernel_size=3, stride=2), nn.ReLU()]
+        # self.layers = nn.ModuleList(cnn_layers)
+        # self.mapping = nn.Linear(784, 64)
+
+        # # new architecture
+        cnn_layers = [nn.Conv2d(1, 16, kernel_size=3, stride=2), nn.ReLU(),
+                      nn.Conv2d(16, 16, kernel_size=3, stride=2), nn.ReLU(),
+                      nn.Conv2d(16, 64, kernel_size=3, stride=2), nn.ReLU(),
+                      nn.Conv2d(64, 64, kernel_size=3, stride=2), nn.ReLU(),
+                      nn.Conv2d(64, 128, kernel_size=3, stride=2), nn.ReLU()]
+        self.layers = nn.ModuleList(cnn_layers)
         self.mapping = nn.Linear(128, 64)
 
     def forward(self, x, rl=False):
-        def naive_forward(x):
-            out = x
-            for layer in self.layers:
-                out = layer(out)
-            out = torch.reshape(out, (out.shape[0], -1)) # (batch, 128, 1, 1) => (batch, 128)
-            out = self.mapping(out)  # (batch, 128) => (batch, 64)
-            return out
 
         if rl:
             x = torch.unsqueeze(x, dim=1)  # insert 1 channel dim (batch, 64, 64) => (batch, 1, 64, 64)
-        return naive_forward(x)
+
+        out = x
+        for layer in self.layers:
+            out = layer(out)
+        out = torch.reshape(out, (out.shape[0], -1)) # (batch, 128, 1, 1) => (batch, 128)
+        out = self.mapping(out)  # (batch, 128) => (batch, 64)
+
+        return out
+
 
 
 class EncoderCNN(nn.Module):
@@ -52,7 +70,7 @@ class EncoderCNN(nn.Module):
         out = torch.unsqueeze(x, dim=1)  # insert 1 channel dim
         for layer in self.layers:
             out = layer(out)
-        out = torch.reshape(out, (out.shape[0], -1))  # flatten
+        out = torch.reshape(out, (out.shape[0], -1))  # flatten (batch, 784)
         return out
 
 
@@ -72,22 +90,25 @@ class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # self.sequence_length = 20
-        # self.mlp_params = {'num_layers': 2, 'input_dim': 256, 'l1_dim': 64, 'output_dim': 128}
-        # self.mlp = MLP(self.mlp_params)
-        self.mapping = nn.Linear(64, 128)
+        # cnn_layers = [nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+        #               nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1), nn.ReLU(),
+        #               nn.ConvTranspose2d(32, 16, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(16), nn.ReLU(),
+        #               nn.ConvTranspose2d(16, 8, kernel_size=4, stride=2, padding=1), nn.ReLU(),
+        #               nn.ConvTranspose2d(8, 4, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(4), nn.ReLU(),
+        #               nn.ConvTranspose2d(4, 1, kernel_size=4, stride=2, padding=1), nn.Tanh()]
 
-        cnn_layers = [nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
-                      nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1), nn.ReLU(),
-                      nn.ConvTranspose2d(32, 16, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(16), nn.ReLU(),
-                      nn.ConvTranspose2d(16, 8, kernel_size=4, stride=2, padding=1), nn.ReLU(),
-                      nn.ConvTranspose2d(8, 4, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(4), nn.ReLU(),
-                      nn.ConvTranspose2d(4, 1, kernel_size=4, stride=2, padding=1), nn.Tanh()]
+        cnn_layers = [nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2), nn.ReLU(),
+                      nn.ConvTranspose2d(64, 64, kernel_size=3, stride=2), nn.ReLU(),
+                      nn.ConvTranspose2d(64, 16, kernel_size=3, stride=2), nn.ReLU(),
+                      nn.ConvTranspose2d(16, 16, kernel_size=3, stride=2), nn.ReLU(),
+                      nn.ConvTranspose2d(16, 1, kernel_size=4, stride=2), nn.Tanh()]
+
         self.layers = nn.ModuleList(cnn_layers)
 
     def forward(self, x):
-        out = self.mapping(x)
-        out = out.unsqueeze(2).unsqueeze(3)
+        # out = self.mapping(x)
+
+        out = x.unsqueeze(2).unsqueeze(3)
         for layer in self.layers:
             out = layer(out)
         return out
@@ -99,48 +120,32 @@ class Predictor(nn.Module):
     def __init__(self, params):
         super().__init__()
 
-        self.input_sequence_length = params['input_sequence_length']
-        self.output_sequence_length = params['output_sequence_length']
+        self.input_sequence_length = params['input_sequence_length']  # 10 Make it 3
+        self.output_sequence_length = params['output_sequence_length']  # 10
         self.sequence_length = self.input_sequence_length + self.output_sequence_length
 
         self.mlp_params = {'num_layers': 3,
                            'input_dim': 64 * self.input_sequence_length,
-                           'l1_dim': 512,
-                           'l2_dim': 256,
-                           'output_dim': 512}
+                           'l1_dim': 1024,
+                           'l2_dim': 512,
+                           'output_dim': 1024}
         self.init_hidden = MLP(self.mlp_params)
         self.init_cell = MLP(self.mlp_params)
+        # produce input MLP (1 step) x feed in every time step
 
-        self.lstm = nn.LSTM(64, 512, batch_first=True)
-        self.mapping = nn.Linear(512, 64)  # hidden_state => embedding
+        self.lstm = nn.LSTM(64, 1024, batch_first=True)  # 256, 256 (upper bound these are)
+        self.mapping = nn.Linear(1024, 128)  # hidden_state => embedding
 
     def forward(self, zts):
-        # z_cat = torch.cat(zs, dim=1)
-        # z_embed = self.mlp(z_cat)
-        # embed_stack = torch.stack([z_embed] * self.sequence_length, dim=1)
-        # lstm_out, _ = self.lstm(embed_stack)  # (batch_size, seq_len, hidden_dim)
-        # return lstm_out
-
-        # batch_size = zts.shape[0]
-        # z_cat = zts.reshape(batch_size,-1)  # (batch, input_seq * 64)
-        # hidden_init = self.mlp(z_cat).reshape(1,batch_size,512)  # (1, batch, 512)
-        # hidden = (hidden_init, torch.zeros(1,batch_size,512).cuda())  # initialized hidden state
-        # out, hidden = self.lstm(zts, hidden)  # (batch_size, seq_len, hidden_dim)
-
-        # zts = unbatchify(zts_batch, self.sequence_length, toTensor=True)  # (batch, seq, 64)
-        # out, _ = self.lstm(zts)  # Question: need clarification
-        # out = self.mapping(out)
-        # return out
-
         batch_size = zts.size(0)
         mlp_input = zts.reshape(batch_size, -1)
         hidden = self.init_hidden(mlp_input)
         cell = self.init_cell(mlp_input)
-        hidden = torch.unsqueeze(hidden, dim=0)  # (1, 32, 512)
-        cell = torch.unsqueeze(cell, dim=0)  # (1, 32, 512)
-        input = torch.zeros(batch_size, self.output_sequence_length, 64).cuda()  # (batch, 20, 64)
-        out, _ = self.lstm(input, (hidden, cell))  # (batch, 20, 512)
-        out = self.mapping(out)  # (batch, 20, 64)
+        hidden = torch.unsqueeze(hidden, dim=0)  # (1, 32, 1024)
+        cell = torch.unsqueeze(cell, dim=0)  # (1, 32, 1024)
+        input = torch.zeros(batch_size, self.output_sequence_length, 64).cuda()  # (batch, 10, 64)
+        out, _ = self.lstm(input, (hidden, cell))  # (batch, 10, 1024)
+        out = self.mapping(out)  # (batch, 10, 128)
         return out
 
 
@@ -153,7 +158,7 @@ class VAEReconstructionModel(nn.Module):
 
         self.encoder = Encoder()
         self.decoder = Decoder()
-        self.predictor_params = {'input_sequence_length': 10, 'sequence_length': 20}
+        self.predictor_params = {'input_sequence_length': 10, 'output_sequence_length': 10}
         self.predictor = Predictor(self.predictor_params)
 
     def forward(self, ts, rl=False):
@@ -185,10 +190,10 @@ class VAERewardPredictionModel(nn.Module):
         if train_decoder:
             self.decoder = Decoder()
 
-        self.predictor_params = {'input_sequence_length': 10, 'output_sequence_length': 20}
+        self.predictor_params = {'input_sequence_length': 10, 'output_sequence_length': 10}
         self.predictor = Predictor(self.predictor_params)
 
-        self.reward_mlp_params = {'num_layers': 3, 'input_dim': 64, 'l1_dim': 256, 'l2_dim': 128, 'output_dim': 1}
+        self.reward_mlp_params = {'num_layers': 3, 'input_dim': 128, 'l1_dim': 256, 'l2_dim': 128, 'output_dim': 1}
         self.K = num_reward_heads
         reward_heads = []
 
@@ -275,7 +280,7 @@ def get_args():
     return args
 
 
-def main(DEBUG=False):
+def main(DEBUG=False, OVERFIT=False):
     args = get_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -304,8 +309,7 @@ def main(DEBUG=False):
     )
 
     # train_loader, val_loader, test_loader = loadVAEData(spec, batch_size=args.batch_size)
-    # DEBUG:
-    train_loader, val_loader, test_loader = loadVAEData(spec, save_to_disk=True, batch_size=args.batch_size)
+    train_loader, val_loader, test_loader = loadVAEData(spec, save_to_disk=True, batch_size=args.batch_size, OVERFIT=OVERFIT)
 
     if args.reconstruction:
         model = VAEReconstructionModel()
@@ -353,4 +357,5 @@ def main(DEBUG=False):
 if __name__ == "__main__":
 
     DEBUG=False
-    main(DEBUG=DEBUG)
+    OVERFIT=False
+    main(DEBUG=DEBUG, OVERFIT=OVERFIT)

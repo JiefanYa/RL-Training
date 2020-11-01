@@ -34,11 +34,11 @@ class ImplDataset(MovingSpriteDataset):
 
     def __len__(self):
         if self.mode == 'train':
-            return 10000
+            return 3000
         elif self.mode == 'val':
-            return 500
+            return 300
         else: # assert self.mode == 'test', 'Mode must be one of {train, val, test}'
-            return 1000
+            return 300
 
 
 class EncoderDataset(MovingSpriteDataset):
